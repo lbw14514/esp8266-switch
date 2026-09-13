@@ -42,6 +42,20 @@ def gz(data):
     return buf.getvalue()
 
 
+def tar_gz(members):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        for name, payload in members:
+            info = tarfile.TarInfo("./" + name)
+            info.size = len(payload)
+            info.mode = 0o644
+            info.mtime = int(time.time())
+            info.uname = "root"
+            info.gname = "root"
+            tar.addfile(info, io.BytesIO(payload))
+    return gz(buf.getvalue())
+
+
 def ar(members):
     out = io.BytesIO()
     out.write(b"!<arch>\n")
@@ -59,10 +73,14 @@ def main():
     version = sys.argv[2]
     out_path = sys.argv[3]
     split = len(sys.argv) > 4 and sys.argv[4] == "--split"
-    pkgname = os.path.basename(root.rstrip("/\\"))
+    base = os.path.basename(out_path)
+    if base.endswith(".ipk") and "_" in base:
+        pkgname = base.split("_")[0]
+    else:
+        pkgname = os.path.basename(root.rstrip("/\\"))
 
     data = io.BytesIO()
-    with tarfile.open(fileobj=data, mode="w") as tar:
+    with tarfile.open(fileobj=data, mode="w", format=tarfile.USTAR_FORMAT) as tar:
         add_tree(tar, root, ".")
 
     total = 0
@@ -81,12 +99,13 @@ def main():
         "Section: luci",
         "Architecture: all",
         "Installed-Size: %d" % ((total + 1023) // 1024),
+        "Conffiles: /etc/config/esp-switch",
         "Description: Discover and control ESP8266 relay switch boards from LuCI",
         "",
     ]).encode("utf-8")
 
     control_tar = io.BytesIO()
-    with tarfile.open(fileobj=control_tar, mode="w") as tar:
+    with tarfile.open(fileobj=control_tar, mode="w", format=tarfile.USTAR_FORMAT) as tar:
         info = tarfile.TarInfo("./control")
         info.size = len(control)
         info.mode = 0o644
@@ -97,8 +116,8 @@ def main():
 
     members = [
         ("debian-binary", b"2.0\n"),
-        ("control.tar.gz", gz(control_tar.getvalue())),
         ("data.tar.gz", gz(raw)),
+        ("control.tar.gz", gz(control_tar.getvalue())),
     ]
     out_dir = os.path.dirname(out_path)
     if out_dir and not os.path.isdir(out_dir):
@@ -111,7 +130,7 @@ def main():
                 fh.write(data)
         print("split %s (%d files bytes)" % (out_path, total))
         return
-    ipk = ar(members)
+    ipk = tar_gz(members)
     with open(out_path, "wb") as fh:
         fh.write(ipk)
     print("built %s (%d bytes, %d files bytes)" % (out_path, len(ipk), total))
