@@ -14,14 +14,20 @@
 
 ## 硬件接线
 
-| 通道 | 默认名称 | GPIO | 板载丝印 |
-| --- | --- | --- | --- |
-| 1 | 主机A | GPIO12 | D6 |
-| 2 | 主机B | GPIO13 | D7 |
-| 3 | 主机C | GPIO14 | D5 |
-| 4 | 主机D | GPIO4 | D2 |
+主板开机是干接点（PWR_SW 两股线），所以每路用**两个 GPIO 分别接这两股线**，触发时两脚同时拉低形成通路（共地），松开后两脚回到高阻。
 
-继电器/光耦为**低电平触发**：空闲输出高电平，触发时拉低 500ms（可在插件里改 100-5000ms）。
+| 通道 | 默认名称 | 引脚 A | 引脚 B |
+| --- | --- | --- | --- |
+| 1 | A | GPIO12 (D6) | GPIO13 (D7) |
+| 2 | B | GPIO14 (D5) | GPIO4 (D2) |
+| 3 | C | GPIO5 | GPIO16 (D0) |
+| 4 | D | GPIO0 | GPIO2 |
+
+这些默认值只是出厂值，实际接哪两个脚由软路由页面上的两个下拉框决定，可选引脚为 GPIO0 / 2 / 4 / 5 / 12 / 13 / 14 / 15 / 16。
+
+注意：GPIO0 / GPIO2 / GPIO15 是 ESP8266 的启动配置脚（分别需要高/高/低电平才能正常启动），如果外部电路把它们持续拉向相反电平，会导致设备无法开机，必要时避开这三个脚。
+
+触发时长由插件里的“脉冲时长”控制，默认 500ms，范围 100-5000ms。
 
 ## 固件
 
@@ -41,15 +47,15 @@ pio device monitor     # 串口日志 115200
 3. 选择 WiFi，填密码，点“保存并连接”，设备重启后进入局域网（地址由 DHCP 分配）
 4. 运行中断网超过 30 秒会自动重开热点，同时持续尝试重连原来的 WiFi
 
-设备自带页面只做配网与查看（通道名、GPIO 引脚、当前 IP），**不提供开关控制**，所有控制都在软路由的插件里。
+设备自带页面只做配网与查看（设备名、通道名、每路引脚、当前 IP），**不提供开关控制**，所有控制都在软路由的插件里。
 
 ### HTTP API
 
 | 请求 | 说明 |
 | --- | --- |
-| `GET /api/info` | 设备信息与四路通道状态 |
-| `GET /api/pulse?ch=1&ms=500` | 触发第 1 路，接通 500ms（`ch=all` 表示全部） |
-| `GET/POST /api/config?name=xx&ch1=主机A&pulse_ms=500` | 改名、设置通道名与脉冲时长 |
+| `GET /api/info` | 设备信息，含可选引脚池 `pins` 与四路通道状态（每路含 `pinA`/`pinB`） |
+| `GET /api/pulse?ch=1&ms=500` | 触发第 1 路：pinA 与 pinB 同时拉低 500ms（`ch=all` 表示全部） |
+| `GET/POST /api/config?name=xx&ch1=A&a1=12&b1=13&pulse_ms=500` | 改名、设置通道名与每路两个引脚、脉冲时长 |
 | `GET /api/scan` | 扫描周边 WiFi |
 | `GET /api/wifi?ssid=xx&pass=yy` | 保存 WiFi 并重启 |
 | `GET /api/reset` | 清除配置并回到配网模式 |
@@ -73,8 +79,8 @@ tr -d '\r' < /root/deploy.sh > /root/d.sh && sh /root/d.sh
 
 - 「扫描设备」用 `avahi-browse` 发现 `_esp-switch._tcp`，做 HTTP 探测确认在线并取回通道名
 - 每 10 秒轮询一次已知设备（不做完整发现，避免卡顿）
-- 每台设备可自定义名称与四路通道名（默认 A/B/C/D），页面同时显示每路对应的 GPIO 引脚
-- 点通道按钮即拉低对应引脚短接 `pulse_ms` 毫秒，默认 500
+- 每台设备可自定义名称与四路通道名（默认 A/B/C/D），每路用两个下拉框选定引脚 A 与引脚 B
+- 点通道按钮即把该路的两个引脚同时拉低 `pulse_ms` 毫秒，默认 500
 - 保存时同时写入 uci 并推送到设备；设备离线则只存 uci，上线后再保存即可下发
 - 脉冲时长保存在 `/etc/config/esp-switch` 的 `settings.pulse_ms`
 
@@ -86,15 +92,24 @@ config settings 'settings'
 	option discover_timeout '5'
 
 config device 'dev_a4cf12ab34cd'
-	option name '书房主机'
+	option name '机柜'
 	option address '192.168.1.30'
 	option ch1 'A'
 	option ch2 'B'
 	option ch3 'C'
 	option ch4 'D'
+	option a1 '12'
+	option b1 '13'
+	option a2 '14'
+	option b2 '4'
+	option a3 '5'
+	option b3 '16'
+	option a4 '0'
+	option b4 '2'
 ```
 
 ## 已知问题
 
 - iStoreOS 24.10.7 的 opkg 对本机生成的 ipk 一律报 `Malformed package file`（结构经 bsdtar 校验正常），因此改用文件级部署，`tools/build_ipk.py` 仍可生成 ipk 备用
 - 插件文件必须用 LF 行尾（Windows 上传后 CRLF 会让 rpcd 脚本失效），`deploy.sh` 已统一转换
+- 插件里的 curl 要用绝对路径 `/usr/bin/curl`，PATH 里的 `/usr/sbin/curl` 是包装脚本，在 rpcd 环境下会失败
