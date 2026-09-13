@@ -12,7 +12,7 @@
 
 #define CH_COUNT 4
 #define CONFIG_MAGIC 0x45534731UL
-#define CONFIG_VERSION 2
+#define CONFIG_VERSION 3
 #define DEFAULT_PULSE_MS 500
 #define MIN_PULSE_MS 100
 #define MAX_PULSE_MS 5000
@@ -20,8 +20,11 @@
 #define AP_FALLBACK_MS 30000UL
 #define RECONNECT_MS 15000UL
 
-static const uint8_t CH_PINS[CH_COUNT] = {12, 13, 14, 4};
-static const char *CH_DEFAULT_NAMES[CH_COUNT] = {"主机A", "主机B", "主机C", "主机D"};
+static const uint8_t CH_DEFAULT_A[CH_COUNT] = {12, 14, 5, 0};
+static const uint8_t CH_DEFAULT_B[CH_COUNT] = {13, 4, 16, 2};
+static const uint8_t PIN_POOL[] = {0, 2, 4, 5, 12, 13, 14, 15, 16};
+#define PIN_POOL_SIZE (sizeof(PIN_POOL) / sizeof(PIN_POOL[0]))
+static const char *CH_DEFAULT_NAMES[CH_COUNT] = {"A", "B", "C", "D"};
 
 struct Config {
   uint32_t magic;
@@ -31,6 +34,8 @@ struct Config {
   char pass[65];
   char device[33];
   char chan[CH_COUNT][19];
+  uint8_t pinA[CH_COUNT];
+  uint8_t pinB[CH_COUNT];
   uint8_t reserved[3];
 };
 
@@ -88,6 +93,23 @@ static String hostName() {
   return out;
 }
 
+static bool pinAllowed(int pin) {
+  for (size_t i = 0; i < PIN_POOL_SIZE; i++) {
+    if (PIN_POOL[i] == pin) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void chanRelease(int index) {
+  digitalWrite(cfg.pinA[index], LOW);
+  pinMode(cfg.pinA[index], INPUT);
+  digitalWrite(cfg.pinB[index], LOW);
+  pinMode(cfg.pinB[index], INPUT);
+  chRun[index].active = false;
+}
+
 static void configDefaults() {
   memset(&cfg, 0, sizeof(cfg));
   cfg.magic = CONFIG_MAGIC;
@@ -95,6 +117,8 @@ static void configDefaults() {
   cfg.pulseMs = DEFAULT_PULSE_MS;
   for (int i = 0; i < CH_COUNT; i++) {
     strncpy(cfg.chan[i], CH_DEFAULT_NAMES[i], sizeof(cfg.chan[i]) - 1);
+    cfg.pinA[i] = CH_DEFAULT_A[i];
+    cfg.pinB[i] = CH_DEFAULT_B[i];
   }
   String id = macId();
   snprintf(cfg.device, sizeof(cfg.device), "esp-switch-%s", id.substring(id.length() - 4).c_str());
@@ -118,6 +142,10 @@ static void configLoad() {
   }
   for (int i = 0; i < CH_COUNT; i++) {
     cfg.chan[i][sizeof(cfg.chan[i]) - 1] = 0;
+    if (!pinAllowed(cfg.pinA[i]) || !pinAllowed(cfg.pinB[i]) || cfg.pinA[i] == cfg.pinB[i]) {
+      cfg.pinA[i] = CH_DEFAULT_A[i];
+      cfg.pinB[i] = CH_DEFAULT_B[i];
+    }
   }
   cfg.ssid[sizeof(cfg.ssid) - 1] = 0;
   cfg.pass[sizeof(cfg.pass) - 1] = 0;
@@ -126,8 +154,10 @@ static void configLoad() {
 
 static void chanInit() {
   for (int i = 0; i < CH_COUNT; i++) {
-    pinMode(CH_PINS[i], OUTPUT);
-    digitalWrite(CH_PINS[i], HIGH);
+    digitalWrite(cfg.pinA[i], LOW);
+    pinMode(cfg.pinA[i], INPUT);
+    digitalWrite(cfg.pinB[i], LOW);
+    pinMode(cfg.pinB[i], INPUT);
     chRun[i].active = false;
     chRun[i].start = 0;
     chRun[i].ms = 0;
@@ -144,7 +174,13 @@ static void chanPulse(int index, uint16_t ms) {
   if (ms > MAX_PULSE_MS) {
     ms = MAX_PULSE_MS;
   }
-  digitalWrite(CH_PINS[index], LOW);
+  if (cfg.pinA[index] == cfg.pinB[index]) {
+    return;
+  }
+  digitalWrite(cfg.pinA[index], LOW);
+  pinMode(cfg.pinA[index], OUTPUT);
+  digitalWrite(cfg.pinB[index], LOW);
+  pinMode(cfg.pinB[index], OUTPUT);
   chRun[index].active = true;
   chRun[index].start = millis();
   chRun[index].ms = ms;
@@ -154,8 +190,7 @@ static void chanTick() {
   uint32_t now = millis();
   for (int i = 0; i < CH_COUNT; i++) {
     if (chRun[i].active && now - chRun[i].start >= chRun[i].ms) {
-      digitalWrite(CH_PINS[i], HIGH);
-      chRun[i].active = false;
+      chanRelease(i);
     }
   }
 }
@@ -272,7 +307,14 @@ static String infoJson() {
   body += (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString());
   body += "\",\"mode\":\"";
   body += (WiFi.status() == WL_CONNECTED ? "sta" : "ap");
-  body += "\",\"channels\":[";
+  body += "\",\"pins\":[";
+  for (size_t p = 0; p < PIN_POOL_SIZE; p++) {
+    if (p) {
+      body += ',';
+    }
+    body += String(PIN_POOL[p]);
+  }
+  body += "],\"channels\":[";
   for (int i = 0; i < CH_COUNT; i++) {
     if (i) {
       body += ',';
@@ -281,8 +323,10 @@ static String infoJson() {
     body += String(i + 1);
     body += ",\"name\":\"";
     body += jsonEscape(cfg.chan[i]);
-    body += "\",\"pin\":";
-    body += String(CH_PINS[i]);
+    body += "\",\"pinA\":";
+    body += String(cfg.pinA[i]);
+    body += ",\"pinB\":";
+    body += String(cfg.pinB[i]);
     body += ",\"active\":";
     body += (chRun[i].active ? "true" : "false");
     body += '}';
@@ -321,7 +365,7 @@ static String pageHtml() {
   h += F("async function api(u){const r=await fetch(u);return r.headers.get('content-type').includes('json')?r.json():r.text();}");
   h += F("function render(){if(!info)return;document.getElementById('sub').textContent=info.name+' | '+info.mode+' | '+info.ip+' | '+info.id;");
   h += F("let box=document.getElementById('chs');box.innerHTML='';info.channels.forEach(c=>{");
-  h += F("let d=document.createElement('div');d.className='ch';d.innerHTML='<b>'+c.name+'</b><span class=\"muted\">GPIO'+c.pin+'</span>';box.appendChild(d);});");
+  h += F("let d=document.createElement('div');d.className='ch';d.innerHTML='<b>'+c.name+'</b><span class=\"muted\">GPIO'+c.pinA+' + GPIO'+c.pinB+'</span>';box.appendChild(d);});");
   h += F("document.getElementById('dev').value=info.name;document.getElementById('pms').value=info.pulse_ms;}");
   h += F("async function refresh(){info=await api('/api/info');render();}");
   h += F("async function saveDev(){await fetch('/api/config?name='+encodeURIComponent(document.getElementById('dev').value)+'&pulse_ms='+document.getElementById('pms').value);refresh();}");
@@ -386,6 +430,28 @@ static void handleConfig() {
         cfg.chan[i - 1][sizeof(cfg.chan[i - 1]) - 1] = 0;
       }
     }
+  }
+  for (int i = 1; i <= CH_COUNT; i++) {
+    String ka = "a" + String(i);
+    String kb = "b" + String(i);
+    if (server.hasArg(ka)) {
+      int v = server.arg(ka).toInt();
+      if (pinAllowed(v)) {
+        cfg.pinA[i - 1] = (uint8_t)v;
+      }
+    }
+    if (server.hasArg(kb)) {
+      int v = server.arg(kb).toInt();
+      if (pinAllowed(v) && v != cfg.pinA[i - 1]) {
+        cfg.pinB[i - 1] = (uint8_t)v;
+      }
+    }
+  }
+  for (int i = 0; i < CH_COUNT; i++) {
+    if (cfg.pinA[i] == cfg.pinB[i]) {
+      cfg.pinB[i] = CH_DEFAULT_B[i];
+    }
+    chanRelease(i);
   }
   if (server.hasArg("pulse_ms")) {
     long ms = server.arg("pulse_ms").toInt();
@@ -475,8 +541,8 @@ static void otaSetup() {
 }
 
 void setup() {
-  chanInit();
   configLoad();
+  chanInit();
   WiFi.hostname(hostName().c_str());
   netSetup();
   webSetup();
