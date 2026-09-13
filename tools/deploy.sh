@@ -24,7 +24,9 @@ else
 fi
 
 rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null
-/etc/init.d/rpcd restart
+killall -9 rpcd 2>/dev/null
+sleep 1
+/etc/init.d/rpcd start
 sleep 2
 echo "== list"
 echo '{}' | /usr/libexec/rpcd/esp-switch list

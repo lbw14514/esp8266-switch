@@ -24,7 +24,7 @@ def add_tree(tar, root, prefix):
             path = os.path.join(dirpath, name)
             target = "%s/%s" % (base, name)
             mode = 0o755 if target.lstrip("./") in EXEC_FILES else 0o644
-            data = open(path, "rb").read()
+            data = open(path, "rb").read().replace(b"\r\n", b"\n")
             info = tarfile.TarInfo(target)
             info.size = len(data)
             info.mode = mode
@@ -104,15 +104,25 @@ def main():
         "",
     ]).encode("utf-8")
 
+    postinst = ("#!/bin/sh\n"
+                "[ -n \"${IPKG_INSTROOT}\" ] || {\n"
+                "\trm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null\n"
+                "\tkillall -9 rpcd 2>/dev/null\n"
+                "\tsleep 1\n"
+                "\t/etc/init.d/rpcd start >/dev/null 2>&1\n"
+                "}\n"
+                "exit 0\n").encode("utf-8")
+
     control_tar = io.BytesIO()
     with tarfile.open(fileobj=control_tar, mode="w", format=tarfile.USTAR_FORMAT) as tar:
-        info = tarfile.TarInfo("./control")
-        info.size = len(control)
-        info.mode = 0o644
-        info.mtime = int(time.time())
-        info.uname = "root"
-        info.gname = "root"
-        tar.addfile(info, io.BytesIO(control))
+        for name, payload, mode in (("./control", control, 0o644), ("./postinst", postinst, 0o755)):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            info.mode = mode
+            info.mtime = int(time.time())
+            info.uname = "root"
+            info.gname = "root"
+            tar.addfile(info, io.BytesIO(payload))
 
     members = [
         ("debian-binary", b"2.0\n"),

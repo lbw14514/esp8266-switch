@@ -75,23 +75,10 @@ discover() {
 	local out="$1"
 	: >"$out"
 	command -v avahi-browse >/dev/null 2>&1 || return 0
-	local to
-	to="$(uci -q get $CFG.settings.discover_timeout)"
-	[ -z "$to" ] && to=3
 	local raw pick
 	raw="$(mktemp)"
 	pick="$(mktemp)"
-	avahi-browse -rtp _esp-switch._tcp >"$raw" 2>&1 &
-	local bpid=$!
-	local waited=0
-	while [ $waited -lt "$to" ]; do
-		sleep 1
-		waited=$((waited + 1))
-		kill -0 "$bpid" 2>/dev/null || break
-		grep -q '^=' "$raw" 2>/dev/null && break
-	done
-	kill "$bpid" 2>/dev/null
-	wait "$bpid" 2>/dev/null
+	avahi-browse -rtp -t _esp-switch._tcp 2>/dev/null | grep '^=' >"$raw"
 	grep '^=' "$raw" 2>/dev/null | awk -F';' '$2 == "br-lan" && $3 == "IPv4"' >"$pick"
 	[ -s "$pick" ] || grep '^=' "$raw" 2>/dev/null | awk -F';' '$3 == "IPv4" && $2 != "lo" && $2 != "docker0"' >"$pick"
 	rm -f "$raw"
@@ -208,10 +195,9 @@ devices() {
 	if [ "$probe" = "1" ]; then
 		while IFS='|' read -r id host addr; do
 			if [ -n "$addr" ]; then
-				( "$CURL" -s -m 2 "http://$addr/api/info" >"$dir/$id" 2>/dev/null ) &
+				"$CURL" -s -m 2 "http://$addr/api/info" >"$dir/$id" 2>/dev/null
 			fi
 		done <"$list"
-		wait
 	fi
 
 	local out_dev="" out_pend="" json
