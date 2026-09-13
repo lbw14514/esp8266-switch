@@ -1,0 +1,278 @@
+#!/bin/sh
+. /usr/share/libubox/jshn.sh
+
+CFG=esp-switch
+
+jf() {
+	echo "$1" | jsonfilter -e "$2" 2>/dev/null
+}
+
+fetch_info() {
+	curl -s -m 2 "http://$1/api/info" 2>/dev/null
+}
+
+uci_name() {
+	uci -q get "$CFG.dev_$1.name"
+}
+
+uci_addr() {
+	uci -q get "$CFG.dev_$1.address"
+}
+
+emit_device() {
+	local id="$1" addr="$2"
+	local info=""
+	[ -n "$addr" ] && info="$(fetch_info "$addr")"
+	if [ -n "$info" ] && [ -z "$(jf "$info" '@.id')" ]; then
+		info=""
+	fi
+	local name="" ip="" online=0 ch1="" ch2="" ch3="" ch4="" pin1="" pin2="" pin3="" pin4=""
+	if [ -n "$info" ]; then
+		online=1
+		name="$(jf "$info" '@.name')"
+		ip="$(jf "$info" '@.ip')"
+		ch1="$(jf "$info" '@.channels[0].name')"
+		ch2="$(jf "$info" '@.channels[1].name')"
+		ch3="$(jf "$info" '@.channels[2].name')"
+		ch4="$(jf "$info" '@.channels[3].name')"
+		pin1="$(jf "$info" '@.channels[0].pin')"
+		pin2="$(jf "$info" '@.channels[1].pin')"
+		pin3="$(jf "$info" '@.channels[2].pin')"
+		pin4="$(jf "$info" '@.channels[3].pin')"
+		if [ -n "$ip" ]; then
+			local base_host="${addr%%:*}" base_port=""
+			case "$addr" in *:*) base_port=":${addr##*:}" ;; esac
+			if [ "$ip" = "$base_host" ]; then
+				addr="$base_host$base_port"
+			else
+				addr="$ip$base_port"
+			fi
+		fi
+	fi
+	local custom ucn
+	custom="$(uci_name "$id")"
+	[ -n "$custom" ] && name="$custom"
+	[ -z "$name" ] && name="$id"
+	[ -z "$addr" ] && addr="$(uci_addr "$id")"
+	ucn="$(uci -q get "$CFG.dev_$id.ch1")"; [ -n "$ucn" ] && ch1="$ucn"
+	ucn="$(uci -q get "$CFG.dev_$id.ch2")"; [ -n "$ucn" ] && ch2="$ucn"
+	ucn="$(uci -q get "$CFG.dev_$id.ch3")"; [ -n "$ucn" ] && ch3="$ucn"
+	ucn="$(uci -q get "$CFG.dev_$id.ch4")"; [ -n "$ucn" ] && ch4="$ucn"
+	json_add_object
+	json_add_string id "$id"
+	json_add_string name "$name"
+	json_add_string address "$addr"
+	json_add_boolean online "$online"
+	json_add_string ch1 "$ch1"
+	json_add_string ch2 "$ch2"
+	json_add_string ch3 "$ch3"
+	json_add_string ch4 "$ch4"
+	json_add_string pin1 "$pin1"
+	json_add_string pin2 "$pin2"
+	json_add_string pin3 "$pin3"
+	json_add_string pin4 "$pin4"
+	json_close_object
+}
+
+devices() {
+	local scan known do_discover=0
+	json_get_var scan scan
+	known="$(uci -q show "$CFG" 2>/dev/null | sed -n "s/^$CFG\.\([^.]*\)=device$/\1/p" | wc -l)"
+	[ "$scan" != "0" ] && do_discover=1
+	[ "$known" = "0" ] && do_discover=1
+	local pick=""
+	if [ "$do_discover" = "1" ] && command -v avahi-browse >/dev/null 2>&1; then
+		local to
+		to="$(uci -q get $CFG.settings.discover_timeout)"
+		[ -z "$to" ] && to=5
+		local raw="$(mktemp)"
+		pick="$(mktemp)"
+		avahi-browse -rtp _esp-switch._tcp >"$raw" 2>&1 &
+		local bpid=$!
+		local waited=0
+		while [ $waited -lt "$to" ]; do
+			sleep 1
+			waited=$((waited + 1))
+			kill -0 "$bpid" 2>/dev/null || break
+		done
+		kill "$bpid" 2>/dev/null
+		wait "$bpid" 2>/dev/null
+		grep '^=' "$raw" 2>/dev/null | awk -F';' '$2 == "br-lan" && $3 == "IPv4"' >"$pick"
+		if [ ! -s "$pick" ]; then
+			grep '^=' "$raw" 2>/dev/null | awk -F';' '$3 == "IPv4" && $2 != "lo" && $2 != "docker0"' >"$pick"
+		fi
+		rm -f "$raw"
+	fi
+	json_init
+	json_add_array devices
+	local seen="" id
+	if [ -n "$pick" ] && [ -s "$pick" ]; then
+		while IFS=';' read -r mark iface proto svcname stype domain host addr port txt; do
+			[ "$mark" = "=" ] || continue
+			id="$(echo "$txt" | sed -n 's/.*"id=\([^"]*\)".*/\1/p')"
+			[ -z "$id" ] && id="$(echo "$host" | cut -d. -f1)"
+			[ -z "$id" ] && continue
+			case " $seen " in *" $id "*) continue ;; esac
+			seen="$seen $id"
+			emit_device "$id" "$addr"
+		done <"$pick"
+		rm -f "$pick"
+	fi
+	local sec
+	for sec in $(uci -q show "$CFG" 2>/dev/null | sed -n "s/^$CFG\.\([^.]*\)=device$/\1/p"); do
+		id="${sec#dev_}"
+		case " $seen " in *" $id "*) continue ;; esac
+		seen="$seen $id"
+		emit_device "$id" "$(uci_addr "$id")"
+	done
+	json_close_array
+	json_dump
+}
+
+pulse() {
+	local address ch ms
+	json_get_var address address
+	json_get_var ch ch
+	json_get_var ms ms
+	[ -z "$ms" ] && ms="$(uci -q get $CFG.settings.pulse_ms)"
+	[ -z "$ms" ] && ms=500
+	json_init
+	if [ -z "$address" ] || [ -z "$ch" ]; then
+		json_add_boolean ok 0
+		json_add_string error "missing address or channel"
+		json_dump
+		return
+	fi
+	local res
+	res="$(curl -s -m 3 "http://$address/api/pulse?ch=$ch&ms=$ms" 2>/dev/null)"
+	if [ -n "$res" ]; then
+		json_add_boolean ok 1
+		json_add_string raw "$res"
+	else
+		json_add_boolean ok 0
+		json_add_string error "device unreachable"
+	fi
+	json_dump
+}
+
+save() {
+	local id name address
+	json_get_var id id
+	json_get_var name name
+	json_get_var address address
+	if [ -z "$id" ]; then
+		json_init
+		json_add_boolean ok 0
+		json_add_string error "missing id"
+		json_dump
+		return
+	fi
+	local sec="dev_$id"
+	uci -q show "$CFG.$sec" >/dev/null 2>&1 || uci -q set "$CFG.$sec=device"
+	[ -n "$name" ] && uci -q set "$CFG.$sec.name=$name"
+	[ -n "$address" ] && uci -q set "$CFG.$sec.address=$address"
+	local i key val
+	for i in 1 2 3 4; do
+		key="ch$i"
+		val=""
+		json_get_var val "$key"
+		[ -n "$val" ] && uci -q set "$CFG.$sec.$key=$val"
+	done
+	uci -q commit "$CFG"
+	local pushed=0
+	if [ -n "$address" ]; then
+		local ok=1 nm
+		nm="$(uci -q get "$CFG.$sec.name")"
+		if [ -n "$nm" ]; then
+			curl -s -m 3 -X POST --data-urlencode "name=$nm" "http://$address/api/config" >/dev/null 2>&1 || ok=0
+		fi
+		for i in 1 2 3 4; do
+			val="$(uci -q get "$CFG.$sec.ch$i")"
+			if [ -n "$val" ]; then
+				curl -s -m 3 -X POST --data-urlencode "ch$i=$val" "http://$address/api/config" >/dev/null 2>&1 || ok=0
+			fi
+		done
+		[ "$ok" = "1" ] && pushed=1
+	fi
+	json_init
+	json_add_boolean ok 1
+	json_add_boolean pushed "$pushed"
+	json_dump
+}
+
+remove() {
+	local id
+	json_get_var id id
+	[ -z "$id" ] && id="$(jsonfilter -e '@.id' 2>/dev/null)"
+	if [ -n "$id" ]; then
+		uci -q delete "$CFG.dev_$id"
+		uci -q commit "$CFG"
+	fi
+	json_init
+	json_add_boolean ok 1
+	json_dump
+}
+
+settings() {
+	local pulse_ms discover_timeout
+	json_get_var pulse_ms pulse_ms
+	json_get_var discover_timeout discover_timeout
+	[ -n "$pulse_ms" ] && uci -q set "$CFG.settings.pulse_ms=$pulse_ms"
+	[ -n "$discover_timeout" ] && uci -q set "$CFG.settings.discover_timeout=$discover_timeout"
+	uci -q commit "$CFG"
+	json_init
+	json_add_boolean ok 1
+	json_add_string pulse_ms "$(uci -q get $CFG.settings.pulse_ms)"
+	json_add_string discover_timeout "$(uci -q get $CFG.settings.discover_timeout)"
+	json_dump
+}
+
+case "$1" in
+list)
+	json_init
+	json_add_object devices
+	json_add_string scan 1
+	json_close_object
+	json_add_object pulse
+	json_add_string ch 1
+	json_add_string address ""
+	json_close_object
+	json_add_object save
+	json_add_string id ""
+	json_add_string name ""
+	json_add_string address ""
+	json_add_string ch1 ""
+	json_add_string ch2 ""
+	json_add_string ch3 ""
+	json_add_string ch4 ""
+	json_close_object
+	json_add_object remove
+	json_add_string id ""
+	json_close_object
+	json_add_object settings
+	json_add_string pulse_ms ""
+	json_add_string discover_timeout ""
+	json_close_object
+	json_dump
+	;;
+call)
+	read -r input
+	json_load "$input"
+	case "$2" in
+	devices) devices ;;
+	pulse) pulse ;;
+	save) save ;;
+	remove) remove ;;
+	settings) settings ;;
+	*)
+		json_init
+		json_add_boolean ok 0
+		json_add_string error "unknown method"
+		json_dump
+		;;
+	esac
+	;;
+*)
+	echo "{}"
+	;;
+esac

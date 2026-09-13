@@ -1,0 +1,17 @@
+{
+	"luci-app-esp-switch": {
+		"description": "Grant access to ESP8266 switch devices",
+		"read": {
+			"ubus": {
+				"esp-switch": ["devices"]
+			},
+			"uci": ["esp-switch"]
+		},
+		"write": {
+			"ubus": {
+				"esp-switch": ["pulse", "save", "remove", "settings"]
+			},
+			"uci": ["esp-switch"]
+		}
+	}
+}
