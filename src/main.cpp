@@ -10,9 +10,9 @@
 #define FW_VERSION "1.0.0"
 #endif
 
-#define CH_COUNT 4
+#define CH_COUNT 3
 #define CONFIG_MAGIC 0x45534731UL
-#define CONFIG_VERSION 3
+#define CONFIG_VERSION 4
 #define DEFAULT_PULSE_MS 500
 #define MIN_PULSE_MS 100
 #define MAX_PULSE_MS 5000
@@ -22,11 +22,11 @@
 
 #define PIN_UNSET 0xFF
 
-static const uint8_t CH_DEFAULT_A[CH_COUNT] = {12, 14, 5, PIN_UNSET};
-static const uint8_t CH_DEFAULT_B[CH_COUNT] = {13, 4, 16, PIN_UNSET};
+static const uint8_t CH_DEFAULT_A[CH_COUNT] = {12, 14, 5};
+static const uint8_t CH_DEFAULT_B[CH_COUNT] = {13, 4, 16};
 static const uint8_t PIN_POOL[] = {4, 5, 12, 13, 14, 16};
 #define PIN_POOL_SIZE (sizeof(PIN_POOL) / sizeof(PIN_POOL[0]))
-static const char *CH_DEFAULT_NAMES[CH_COUNT] = {"A", "B", "C", "D"};
+static const char *CH_DEFAULT_NAMES[CH_COUNT] = {"A", "B", "C"};
 
 struct Config {
   uint32_t magic;
@@ -142,10 +142,23 @@ static void configSave() {
 static void configLoad() {
   EEPROM.begin(sizeof(Config) + 8);
   EEPROM.get(0, cfg);
-  if (cfg.magic != CONFIG_MAGIC || cfg.version != CONFIG_VERSION) {
+  if (cfg.magic != CONFIG_MAGIC) {
     configDefaults();
     configSave();
     return;
+  }
+  if (cfg.version != CONFIG_VERSION) {
+    cfg.version = CONFIG_VERSION;
+    cfg.pulseMs = DEFAULT_PULSE_MS;
+    for (int i = 0; i < CH_COUNT; i++) {
+      cfg.pinA[i] = CH_DEFAULT_A[i];
+      cfg.pinB[i] = CH_DEFAULT_B[i];
+      cfg.chan[i][sizeof(cfg.chan[i]) - 1] = 0;
+    }
+    cfg.ssid[sizeof(cfg.ssid) - 1] = 0;
+    cfg.pass[sizeof(cfg.pass) - 1] = 0;
+    cfg.device[sizeof(cfg.device) - 1] = 0;
+    configSave();
   }
   if (cfg.pulseMs < MIN_PULSE_MS || cfg.pulseMs > MAX_PULSE_MS) {
     cfg.pulseMs = DEFAULT_PULSE_MS;
@@ -222,7 +235,7 @@ static void mdnsStart() {
     MDNS.addServiceTxt("esp-switch", "tcp", "host", host.c_str());
     MDNS.addServiceTxt("esp-switch", "tcp", "model", "esp-switch-4ch");
     MDNS.addServiceTxt("esp-switch", "tcp", "fw", FW_VERSION);
-    MDNS.addServiceTxt("esp-switch", "tcp", "ch", "4");
+    MDNS.addServiceTxt("esp-switch", "tcp", "ch", "3");
     mdnsUp = true;
   }
 }
