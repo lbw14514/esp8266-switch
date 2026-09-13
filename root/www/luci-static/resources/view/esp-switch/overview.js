@@ -27,13 +27,14 @@ var callSave = rpc.declare({
 	expect: {}
 });
 
-var callRestore = rpc.declare({
+var CH_COUNT = 3;
+
+var callRemove = rpc.declare({
 	object: 'esp-switch',
-	method: 'restore',
+	method: 'remove',
+	params: [ 'id' ],
 	expect: {}
 });
-
-var CH_COUNT = 3;
 
 var callReject = rpc.declare({
 	object: 'esp-switch',
@@ -48,6 +49,31 @@ var callApprove = rpc.declare({
 	params: [ 'id', 'name', 'address' ],
 	expect: {}
 });
+
+var callRestore = rpc.declare({
+	object: 'esp-switch',
+	method: 'restore',
+	expect: {}
+});
+
+var ignoreDevice = function(id) {
+	return callReject(id).catch(function() {
+		return callRemove(id);
+	});
+};
+
+var restoreIgnored = function() {
+	return callRestore().catch(function() {
+		return callRemove('*');
+	});
+};
+
+var pairDevice = function(p) {
+	var name = p.name || p.id;
+	return callApprove(p.id, name, p.address).catch(function() {
+		return callSave(p.id, name, p.address);
+	});
+};
 
 var callSettings = rpc.declare({
 	object: 'esp-switch',
@@ -231,8 +257,10 @@ return view.extend({
 					'click': function() {
 						if (!confirm('移除设备 ' + (dev.name || dev.id) + ' ？移除后不会再被自动发现，可用“恢复已忽略设备”找回'))
 							return Promise.resolve();
-						return callReject(dev.id).then(function() {
+						return ignoreDevice(dev.id).then(function() {
 							return self.refresh(false);
+						}).catch(function(e) {
+							ui.addNotification(null, E('p', {}, [ '移除失败：' + e ]), 'error');
 						});
 					}
 				}, [ '移除' ])
@@ -337,7 +365,7 @@ return view.extend({
 					'click': function() {
 						self.closeModal();
 						self.asking = false;
-						return callReject(p.id).then(function() {
+						return ignoreDevice(p.id).then(function() {
 							return self.refresh(false);
 						}).catch(function(e) {
 							ui.addNotification(null, E('p', {}, [ '操作失败：' + e ]), 'error');
@@ -351,7 +379,7 @@ return view.extend({
 					'click': function() {
 						self.closeModal();
 						self.asking = false;
-						return callApprove(p.id, label, p.address).then(function(res) {
+						return pairDevice(p).then(function(res) {
 							ui.addNotification(null, E('p', {}, [ '已配对：' + ((res && res.name) || label) ]));
 							return self.refresh(false);
 						}).catch(function(e) {
@@ -429,9 +457,11 @@ return view.extend({
 						E('button', {
 							'class': 'btn cbi-button',
 							'click': function() {
-								return callRestore().then(function() {
+								return restoreIgnored().then(function() {
 									ui.addNotification(null, E('p', {}, [ '已恢复被忽略的设备' ]));
-									return self.refresh(true);
+									return self.refresh(false);
+								}).catch(function(e) {
+									ui.addNotification(null, E('p', {}, [ '恢复失败：' + e ]), 'error');
 								});
 							}
 						}, [ '恢复已忽略设备' ])
