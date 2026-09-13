@@ -9,7 +9,7 @@
 		},
 		"write": {
 			"ubus": {
-				"esp-switch": ["pulse", "save", "remove", "settings"]
+				"esp-switch": ["pulse", "save", "approve", "reject", "restore", "settings"]
 			},
 			"uci": ["esp-switch"]
 		}

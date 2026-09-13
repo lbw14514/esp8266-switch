@@ -22,15 +22,30 @@ var callSave = rpc.declare({
 	object: 'esp-switch',
 	method: 'save',
 	params: [ 'id', 'name', 'address',
-		'ch1', 'ch2', 'ch3', 'ch4',
-		'a1', 'b1', 'a2', 'b2', 'a3', 'b3', 'a4', 'b4' ],
+		'ch1', 'ch2', 'ch3',
+		'a1', 'b1', 'a2', 'b2', 'a3', 'b3' ],
 	expect: {}
 });
 
-var callRemove = rpc.declare({
+var callRestore = rpc.declare({
 	object: 'esp-switch',
-	method: 'remove',
+	method: 'restore',
+	expect: {}
+});
+
+var CH_COUNT = 3;
+
+var callReject = rpc.declare({
+	object: 'esp-switch',
+	method: 'reject',
 	params: [ 'id' ],
+	expect: {}
+});
+
+var callApprove = rpc.declare({
+	object: 'esp-switch',
+	method: 'approve',
+	params: [ 'id', 'name', 'address' ],
 	expect: {}
 });
 
@@ -44,15 +59,16 @@ var callSettings = rpc.declare({
 return view.extend({
 	pulseMs: 500,
 	rows: null,
+	asking: false,
 
 	load: function() {
 		return callDevices('1');
 	},
 
 	channelNames: function(dev) {
-		var names = [ dev.ch1, dev.ch2, dev.ch3, dev.ch4 ];
+		var names = [ dev.ch1, dev.ch2, dev.ch3 ];
 		var out = [];
-		for (var i = 0; i < 4; i++)
+		for (var i = 0; i < CH_COUNT; i++)
 			out.push((names[i] && names[i].length) ? names[i] : String.fromCharCode(65 + i));
 		return out;
 	},
@@ -68,12 +84,12 @@ return view.extend({
 	},
 
 	channelPinPairs: function(dev) {
-		return [ [ dev.a1, dev.b1 ], [ dev.a2, dev.b2 ], [ dev.a3, dev.b3 ], [ dev.a4, dev.b4 ] ];
+		return [ [ dev.a1, dev.b1 ], [ dev.a2, dev.b2 ], [ dev.a3, dev.b3 ] ];
 	},
 
 	availablePins: function(pool, pairs, chIndex, slot) {
 		var used = {};
-		for (var i = 0; i < 4; i++) {
+		for (var i = 0; i < CH_COUNT; i++) {
 			for (var k = 0; k < 2; k++) {
 				if (i === chIndex && k === slot)
 					continue;
@@ -149,23 +165,22 @@ return view.extend({
 		var cur = [
 			[ this.pinSet(pairs[0][0]) ? String(pairs[0][0]) : '', this.pinSet(pairs[0][1]) ? String(pairs[0][1]) : '' ],
 			[ this.pinSet(pairs[1][0]) ? String(pairs[1][0]) : '', this.pinSet(pairs[1][1]) ? String(pairs[1][1]) : '' ],
-			[ this.pinSet(pairs[2][0]) ? String(pairs[2][0]) : '', this.pinSet(pairs[2][1]) ? String(pairs[2][1]) : '' ],
-			[ this.pinSet(pairs[3][0]) ? String(pairs[3][0]) : '', this.pinSet(pairs[3][1]) ? String(pairs[3][1]) : '' ]
+			[ this.pinSet(pairs[2][0]) ? String(pairs[2][0]) : '', this.pinSet(pairs[2][1]) ? String(pairs[2][1]) : '' ]
 		];
 		var apply = function() {
-			for (var i = 0; i < 4; i++) {
+			for (var i = 0; i < CH_COUNT; i++) {
 				self.fillSelect(selA[i], self.availablePins(pins, cur, i, 0), cur[i][0]);
 				self.fillSelect(selB[i], self.availablePins(pins, cur, i, 1), cur[i][1]);
 			}
 		};
 		var onchange = function() {
-			for (var i = 0; i < 4; i++) {
+			for (var i = 0; i < CH_COUNT; i++) {
 				cur[i][0] = selA[i].value;
 				cur[i][1] = selB[i].value;
 			}
 			apply();
 		};
-		for (var i = 0; i < 4; i++) {
+		for (var i = 0; i < CH_COUNT; i++) {
 			chInputs.push(E('input', {
 				'type': 'text',
 				'class': 'cbi-input-text',
@@ -176,13 +191,13 @@ return view.extend({
 			selB.push(this.makePinSelect());
 			buttons.push(this.makePulseButton(dev, i, names[i]));
 		}
-		for (var i = 0; i < 4; i++) {
+		for (var i = 0; i < CH_COUNT; i++) {
 			selA[i].addEventListener('change', onchange);
 			selB[i].addEventListener('change', onchange);
 		}
 		apply();
 		var channels = [];
-		for (var j = 0; j < 4; j++)
+		for (var j = 0; j < CH_COUNT; j++)
 			channels.push(E('div', { 'style': 'display:flex;gap:6px;align-items:center' }, [
 				chInputs[j], selA[j], E('span', { 'class': 'cbi-value-description' }, [ '↔' ]), selB[j], buttons[j]
 			]));
@@ -196,9 +211,9 @@ return view.extend({
 					'click': function() {
 						var v = function(sel) { return sel.value ? sel.value : 'none'; };
 						return callSave(dev.id, input.value, dev.address,
-							chInputs[0].value, chInputs[1].value, chInputs[2].value, chInputs[3].value,
+							chInputs[0].value, chInputs[1].value, chInputs[2].value,
 							v(selA[0]), v(selB[0]), v(selA[1]), v(selB[1]),
-							v(selA[2]), v(selB[2]), v(selA[3]), v(selB[3])).then(function(res) {
+							v(selA[2]), v(selB[2])).then(function(res) {
 							if (!res || res.ok != 1) {
 								ui.addNotification(null, E('p', {}, [ '保存失败' ]), 'error');
 								return;
@@ -214,10 +229,10 @@ return view.extend({
 				E('button', {
 					'class': 'btn cbi-button cbi-button-remove',
 					'click': function() {
-						if (!confirm('移除设备 ' + (dev.name || dev.id) + ' ？'))
+						if (!confirm('移除设备 ' + (dev.name || dev.id) + ' ？移除后不会再被自动发现，可用“恢复已忽略设备”找回'))
 							return Promise.resolve();
-						return callRemove(dev.id).then(function() {
-							return self.refresh();
+						return callReject(dev.id).then(function() {
+							return self.refresh(false);
 						});
 					}
 				}, [ '移除' ])
@@ -262,7 +277,7 @@ return view.extend({
 			if (document.activeElement !== parts.nameInput)
 				parts.nameInput.value = dev.name || dev.id;
 			var names = this.channelNames(dev);
-			for (var k = 0; k < 4; k++) {
+			for (var k = 0; k < CH_COUNT; k++) {
 				if (document.activeElement !== parts.chInputs[k])
 					parts.chInputs[k].value = names[k];
 				parts.buttons[k].textContent = names[k];
@@ -274,7 +289,58 @@ return view.extend({
 		var self = this;
 		return callDevices(scan ? '1' : '0').then(function(list) {
 			self.updateRows(list);
+			return self.askPending(list);
 		});
+	},
+
+	closeModal: function() {
+		try {
+			ui.hideModal();
+		} catch (e) {
+		}
+		var n = document.getElementById('modal_overlay');
+		if (n && n.parentNode)
+			n.parentNode.removeChild(n);
+	},
+
+	askPending: function(list) {
+		var self = this;
+		var pend = (list && list.pending) ? list.pending : [];
+		if (!pend.length || this.asking)
+			return Promise.resolve();
+		var p = pend[0];
+		var label = p.name || p.id;
+		this.asking = true;
+		return ui.showModal('发现新设备', [
+			E('p', {}, [ '“' + label + '” 想要与您配对，是否同意？' ]),
+			E('p', { 'class': 'cbi-value-description' }, [
+				'地址 ' + (p.address || '未知') + ' · ' + p.id
+			]),
+			E('div', { 'class': 'right' }, [
+				E('button', {
+					'class': 'btn',
+					'click': function() {
+						self.closeModal();
+						self.asking = false;
+						return callReject(p.id).then(function() {
+							return self.refresh(false);
+						});
+					}
+				}, [ '不同意' ]),
+				' ',
+				E('button', {
+					'class': 'btn cbi-button cbi-button-action',
+					'click': function() {
+						self.closeModal();
+						self.asking = false;
+						return callApprove(p.id, label, p.address).then(function(res) {
+							ui.addNotification(null, E('p', {}, [ '已配对：' + ((res && res.name) || label) ]));
+							return self.refresh(false);
+						});
+					}
+				}, [ '同意' ])
+			])
+		]);
 	},
 
 	render: function(data) {
@@ -290,6 +356,7 @@ return view.extend({
 		this.body = E('tbody', {});
 		table.appendChild(this.body);
 		this.updateRows(data);
+		this.askPending(data);
 
 		var pulseInput = E('input', {
 			'type': 'text',
@@ -332,7 +399,17 @@ return view.extend({
 									ui.addNotification(null, E('p', {}, [ '扫描完成' ]));
 								});
 							}
-						}, [ '扫描设备' ])
+						}, [ '扫描设备' ]),
+						' ',
+						E('button', {
+							'class': 'btn cbi-button',
+							'click': function() {
+								return callRestore().then(function() {
+									ui.addNotification(null, E('p', {}, [ '已恢复被忽略的设备' ]));
+									return self.refresh(true);
+								});
+							}
+						}, [ '恢复已忽略设备' ])
 					])
 				])
 			]),
