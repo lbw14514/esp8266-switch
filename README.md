@@ -6,11 +6,8 @@
 
 | 目录 | 内容 |
 | --- | --- |
-| `firmware/` | ESP8266 固件（PlatformIO + Arduino Core，4 路低电平脉冲、mDNS、HTTP API、OTA、AP 配网） |
+| `firmware/` | ESP8266 固件（PlatformIO + Arduino Core，3 路低电平脉冲、mDNS、HTTP API、OTA、AP 配网） |
 | `luci-app-esp-switch/root/` | iStoreOS 插件文件树（rpcd 后端 + LuCI JS 前端 + uci 配置 + ACL + 菜单） |
-| `tools/deploy.sh` | 在路由器上安装插件（scp 上传后执行） |
-| `tools/build_ipk.py` | 生成 ipk 包（当前 iStoreOS 的 opkg 不接受自建 ipk，见下文） |
-| `tools/fake_device.py` | 模拟设备，用于在没有硬件时验证插件链路 |
 
 ## 硬件接线
 
@@ -32,7 +29,7 @@
 
 ## 固件
 
-编译与烧录（`pio` 位于 `C:\Users\admin\.platformio\penv\Scripts\platformio.exe`，已加入 PATH）：
+编译与烧录：
 
 ```bash
 cd firmware
@@ -66,25 +63,13 @@ pio device monitor     # 串口日志 115200
 
 ## 路由器插件
 
-安装方式二选一。
-
-**方式一：ipk 安装包（推荐）**，从 GitHub Release 下载 `luci-app-esp-switch_<版本>_all.ipk`，然后：
+从 GitHub Release 下载 `luci-app-esp-switch_<版本>_all.ipk`，然后：
 
 ```bash
-opkg install /tmp/luci-app-esp-switch_1.2.0_all.ipk
+opkg install /tmp/luci-app-esp-switch_1.3.1_all.ipk
 ```
 
 `/etc/config/esp-switch` 已声明为 conffile，正常升级不会覆盖你的设备配置。
-
-**方式二：文件级部署**（iStoreOS 24.10.7 上如果 ipk 报错就用这个）：
-
-```bash
-# 本机
-pscp -pw <密码> -r luci-app-esp-switch/root root@192.168.1.2:/tmp/luci-app-esp-switch
-pscp -pw <密码> tools/deploy.sh root@192.168.1.2:/root/
-# 路由器
-tr -d '\r' < /root/deploy.sh > /root/d.sh && sh /root/d.sh
-```
 
 入口：LuCI → 服务 → ESP 开关。
 
@@ -124,6 +109,5 @@ config ignore 'ignore_cafebabe22'
 
 ## 已知问题
 
-- iStoreOS 24.10.7 的 opkg 对本机生成的 ipk 一律报 `Malformed package file`（结构经 bsdtar 校验正常），因此改用文件级部署，`tools/build_ipk.py` 仍可生成 ipk 备用
-- 插件文件必须用 LF 行尾（Windows 上传后 CRLF 会让 rpcd 脚本失效），`deploy.sh` 已统一转换
+- 插件文件必须用 LF 行尾，Windows 上传的 CRLF 会让 rpcd 脚本失效（打包时已自动归一为 LF）
 - 插件里的 curl 要用绝对路径 `/usr/bin/curl`，PATH 里的 `/usr/sbin/curl` 是包装脚本，在 rpcd 环境下会失败
