@@ -60,21 +60,61 @@ return view.extend({
 	pinList: function(dev) {
 		if (dev.pins && dev.pins.length)
 			return dev.pins.split(',');
-		return [ '0', '2', '4', '5', '12', '13', '14', '15', '16' ];
+		return [ '4', '5', '12', '13', '14', '16' ];
+	},
+
+	pinSet: function(v) {
+		return v != null && v !== '' && v != -1 && v != '-1' && v != 'none';
 	},
 
 	channelPinPairs: function(dev) {
 		return [ [ dev.a1, dev.b1 ], [ dev.a2, dev.b2 ], [ dev.a3, dev.b3 ], [ dev.a4, dev.b4 ] ];
 	},
 
-	makePinSelect: function(pins, value) {
-		var opts = [];
-		for (var i = 0; i < pins.length; i++)
-			opts.push(E('option', {
-				'value': pins[i],
-				'selected': (value != null && String(pins[i]) == String(value)) ? 'selected' : null
-			}, [ 'GPIO' + pins[i] ]));
-		return E('select', { 'class': 'cbi-input-select', 'style': 'width:7em' }, opts);
+	availablePins: function(pool, pairs, chIndex, slot) {
+		var used = {};
+		for (var i = 0; i < 4; i++) {
+			for (var k = 0; k < 2; k++) {
+				if (i === chIndex && k === slot)
+					continue;
+				if (this.pinSet(pairs[i][k]))
+					used[String(pairs[i][k])] = 1;
+			}
+		}
+		var out = [];
+		for (var j = 0; j < pool.length; j++) {
+			if (!used[String(pool[j])])
+				out.push(pool[j]);
+		}
+		var cur = pairs[chIndex][slot];
+		if (this.pinSet(cur) && out.indexOf(String(cur)) < 0)
+			out.push(String(cur));
+		out.sort(function(a, b) { return Number(a) - Number(b); });
+		return out;
+	},
+
+	makePinSelect: function() {
+		return E('select', { 'class': 'cbi-input-select', 'style': 'width:7em' });
+	},
+
+	fillSelect: function(sel, list, value) {
+		while (sel.firstChild)
+			sel.removeChild(sel.firstChild);
+		var set = this.pinSet(value);
+		sel.appendChild(E('option', { 'value': '', 'selected': set ? null : 'selected' }, [ '未使用' ]));
+		var found = false;
+		for (var i = 0; i < list.length; i++) {
+			var hit = set && String(list[i]) == String(value);
+			if (hit)
+				found = true;
+			sel.appendChild(E('option', {
+				'value': list[i],
+				'selected': hit ? 'selected' : null
+			}, [ 'GPIO' + list[i] ]));
+		}
+		if (set && !found)
+			sel.appendChild(E('option', { 'value': String(value), 'selected': 'selected' }, [ 'GPIO' + value ]));
+		sel.value = set ? String(value) : '';
 	},
 
 	makePulseButton: function(dev, index, label) {
@@ -106,6 +146,25 @@ return view.extend({
 			'class': 'label ' + (dev.online == 1 ? 'success' : 'warning')
 		}, [ dev.online == 1 ? '在线' : '离线' ]);
 		var chInputs = [], selA = [], selB = [], buttons = [];
+		var cur = [
+			[ this.pinSet(pairs[0][0]) ? String(pairs[0][0]) : '', this.pinSet(pairs[0][1]) ? String(pairs[0][1]) : '' ],
+			[ this.pinSet(pairs[1][0]) ? String(pairs[1][0]) : '', this.pinSet(pairs[1][1]) ? String(pairs[1][1]) : '' ],
+			[ this.pinSet(pairs[2][0]) ? String(pairs[2][0]) : '', this.pinSet(pairs[2][1]) ? String(pairs[2][1]) : '' ],
+			[ this.pinSet(pairs[3][0]) ? String(pairs[3][0]) : '', this.pinSet(pairs[3][1]) ? String(pairs[3][1]) : '' ]
+		];
+		var apply = function() {
+			for (var i = 0; i < 4; i++) {
+				self.fillSelect(selA[i], self.availablePins(pins, cur, i, 0), cur[i][0]);
+				self.fillSelect(selB[i], self.availablePins(pins, cur, i, 1), cur[i][1]);
+			}
+		};
+		var onchange = function() {
+			for (var i = 0; i < 4; i++) {
+				cur[i][0] = selA[i].value;
+				cur[i][1] = selB[i].value;
+			}
+			apply();
+		};
 		for (var i = 0; i < 4; i++) {
 			chInputs.push(E('input', {
 				'type': 'text',
@@ -113,10 +172,15 @@ return view.extend({
 				'value': names[i],
 				'style': 'width:5em'
 			}));
-			selA.push(this.makePinSelect(pins, pairs[i][0]));
-			selB.push(this.makePinSelect(pins, pairs[i][1]));
+			selA.push(this.makePinSelect());
+			selB.push(this.makePinSelect());
 			buttons.push(this.makePulseButton(dev, i, names[i]));
 		}
+		for (var i = 0; i < 4; i++) {
+			selA[i].addEventListener('change', onchange);
+			selB[i].addEventListener('change', onchange);
+		}
+		apply();
 		var channels = [];
 		for (var j = 0; j < 4; j++)
 			channels.push(E('div', { 'style': 'display:flex;gap:6px;align-items:center' }, [
@@ -130,10 +194,11 @@ return view.extend({
 				E('button', {
 					'class': 'btn cbi-button cbi-button-save',
 					'click': function() {
+						var v = function(sel) { return sel.value ? sel.value : 'none'; };
 						return callSave(dev.id, input.value, dev.address,
 							chInputs[0].value, chInputs[1].value, chInputs[2].value, chInputs[3].value,
-							selA[0].value, selB[0].value, selA[1].value, selB[1].value,
-							selA[2].value, selB[2].value, selA[3].value, selB[3].value).then(function(res) {
+							v(selA[0]), v(selB[0]), v(selA[1]), v(selB[1]),
+							v(selA[2]), v(selB[2]), v(selA[3]), v(selB[3])).then(function(res) {
 							if (!res || res.ok != 1) {
 								ui.addNotification(null, E('p', {}, [ '保存失败' ]), 'error');
 								return;
@@ -197,14 +262,9 @@ return view.extend({
 			if (document.activeElement !== parts.nameInput)
 				parts.nameInput.value = dev.name || dev.id;
 			var names = this.channelNames(dev);
-			var pairs = this.channelPinPairs(dev);
 			for (var k = 0; k < 4; k++) {
 				if (document.activeElement !== parts.chInputs[k])
 					parts.chInputs[k].value = names[k];
-				if (document.activeElement !== parts.selA[k] && pairs[k][0])
-					parts.selA[k].value = String(pairs[k][0]);
-				if (document.activeElement !== parts.selB[k] && pairs[k][1])
-					parts.selB[k].value = String(pairs[k][1]);
 				parts.buttons[k].textContent = names[k];
 			}
 		}
