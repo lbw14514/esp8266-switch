@@ -7,7 +7,7 @@
 var callDevices = rpc.declare({
 	object: 'esp-switch',
 	method: 'devices',
-	params: [ 'scan' ],
+	params: [ 'scan', 'probe' ],
 	expect: {}
 });
 
@@ -62,7 +62,7 @@ return view.extend({
 	asking: false,
 
 	load: function() {
-		return callDevices('1');
+		return callDevices('0', '0');
 	},
 
 	channelNames: function(dev) {
@@ -245,7 +245,9 @@ return view.extend({
 			chInputs: chInputs,
 			selA: selA,
 			selB: selB,
-			buttons: buttons
+			buttons: buttons,
+			cur: cur,
+			apply: apply
 		};
 		return row;
 	},
@@ -282,12 +284,25 @@ return view.extend({
 					parts.chInputs[k].value = names[k];
 				parts.buttons[k].textContent = names[k];
 			}
+			var busy = false;
+			for (var m = 0; m < CH_COUNT; m++) {
+				if (document.activeElement === parts.selA[m] || document.activeElement === parts.selB[m])
+					busy = true;
+			}
+			if (!busy && parts.apply) {
+				var pp = this.channelPinPairs(dev);
+				for (var n = 0; n < CH_COUNT; n++) {
+					parts.cur[n][0] = this.pinSet(pp[n][0]) ? String(pp[n][0]) : '';
+					parts.cur[n][1] = this.pinSet(pp[n][1]) ? String(pp[n][1]) : '';
+				}
+				parts.apply();
+			}
 		}
 	},
 
 	refresh: function(scan) {
 		var self = this;
-		return callDevices(scan ? '1' : '0').then(function(list) {
+		return callDevices(scan ? '1' : '0', '1').then(function(list) {
 			self.updateRows(list);
 			return self.askPending(list);
 		});
@@ -374,6 +389,10 @@ return view.extend({
 		poll.add(function() {
 			return self.refresh(false);
 		}, 10);
+
+		window.setTimeout(function() {
+			self.refresh(true);
+		}, 1200);
 
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [ 'ESP 开关' ]),
