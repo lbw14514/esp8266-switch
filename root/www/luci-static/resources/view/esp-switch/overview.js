@@ -324,6 +324,9 @@ return view.extend({
 						self.asking = false;
 						return callReject(p.id).then(function() {
 							return self.refresh(false);
+						}).catch(function(e) {
+							ui.addNotification(null, E('p', {}, [ '操作失败：' + e ]), 'error');
+							return self.refresh(false);
 						});
 					}
 				}, [ '不同意' ]),
@@ -335,6 +338,9 @@ return view.extend({
 						self.asking = false;
 						return callApprove(p.id, label, p.address).then(function(res) {
 							ui.addNotification(null, E('p', {}, [ '已配对：' + ((res && res.name) || label) ]));
+							return self.refresh(false);
+						}).catch(function(e) {
+							ui.addNotification(null, E('p', {}, [ '配对失败：' + e ]), 'error');
 							return self.refresh(false);
 						});
 					}
