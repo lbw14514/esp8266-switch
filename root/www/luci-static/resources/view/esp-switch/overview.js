@@ -346,6 +346,13 @@ return view.extend({
 			n.parentNode.removeChild(n);
 	},
 
+	hardRefresh: function() {
+		this.rows = null;
+		this.parts = null;
+		this.asking = false;
+		return this.refresh(true);
+	},
+
 	askPending: function(list) {
 		var self = this;
 		var pend = (list && list.pending) ? list.pending : [];
@@ -448,8 +455,8 @@ return view.extend({
 						E('button', {
 							'class': 'btn cbi-button cbi-button-action',
 							'click': function() {
-								return self.refresh(true).then(function() {
-									ui.addNotification(null, E('p', {}, [ '扫描完成' ]));
+								return self.hardRefresh().then(function() {
+									ui.addNotification(null, E('p', {}, [ '已刷新' ]));
 								});
 							}
 						}, [ '扫描设备' ]),
