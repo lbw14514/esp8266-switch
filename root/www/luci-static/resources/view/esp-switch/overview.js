@@ -21,7 +21,9 @@ var callPulse = rpc.declare({
 var callSave = rpc.declare({
 	object: 'esp-switch',
 	method: 'save',
-	params: [ 'id', 'name', 'address', 'ch1', 'ch2', 'ch3', 'ch4' ],
+	params: [ 'id', 'name', 'address',
+		'ch1', 'ch2', 'ch3', 'ch4',
+		'a1', 'b1', 'a2', 'b2', 'a3', 'b3', 'a4', 'b4' ],
 	expect: {}
 });
 
@@ -55,8 +57,24 @@ return view.extend({
 		return out;
 	},
 
-	channelPins: function(dev) {
-		return [ dev.pin1, dev.pin2, dev.pin3, dev.pin4 ];
+	pinList: function(dev) {
+		if (dev.pins && dev.pins.length)
+			return dev.pins.split(',');
+		return [ '0', '2', '4', '5', '12', '13', '14', '15', '16' ];
+	},
+
+	channelPinPairs: function(dev) {
+		return [ [ dev.a1, dev.b1 ], [ dev.a2, dev.b2 ], [ dev.a3, dev.b3 ], [ dev.a4, dev.b4 ] ];
+	},
+
+	makePinSelect: function(pins, value) {
+		var opts = [];
+		for (var i = 0; i < pins.length; i++)
+			opts.push(E('option', {
+				'value': pins[i],
+				'selected': (value != null && String(pins[i]) == String(value)) ? 'selected' : null
+			}, [ 'GPIO' + pins[i] ]));
+		return E('select', { 'class': 'cbi-input-select', 'style': 'width:7em' }, opts);
 	},
 
 	makePulseButton: function(dev, index, label) {
@@ -76,7 +94,8 @@ return view.extend({
 	makeRow: function(dev) {
 		var self = this;
 		var names = this.channelNames(dev);
-		var pins = this.channelPins(dev);
+		var pairs = this.channelPinPairs(dev);
+		var pins = this.pinList(dev);
 		var input = E('input', {
 			'type': 'text',
 			'class': 'cbi-input-text',
@@ -86,25 +105,23 @@ return view.extend({
 		var status = E('span', {
 			'class': 'label ' + (dev.online == 1 ? 'success' : 'warning')
 		}, [ dev.online == 1 ? '在线' : '离线' ]);
-		var chInputs = [], chPins = [], buttons = [];
+		var chInputs = [], selA = [], selB = [], buttons = [];
 		for (var i = 0; i < 4; i++) {
-			var chInput = E('input', {
+			chInputs.push(E('input', {
 				'type': 'text',
 				'class': 'cbi-input-text',
 				'value': names[i],
-				'style': 'width:6em'
-			});
-			var pin = E('span', { 'class': 'cbi-value-description' },
-				[ pins[i] ? 'GPIO' + pins[i] : '未探测' ]);
-			var btn = this.makePulseButton(dev, i, names[i]);
-			chInputs.push(chInput);
-			chPins.push(pin);
-			buttons.push(btn);
+				'style': 'width:5em'
+			}));
+			selA.push(this.makePinSelect(pins, pairs[i][0]));
+			selB.push(this.makePinSelect(pins, pairs[i][1]));
+			buttons.push(this.makePulseButton(dev, i, names[i]));
 		}
 		var channels = [];
 		for (var j = 0; j < 4; j++)
-			channels.push(E('div', { 'style': 'display:flex;gap:6px;align-items:center' },
-				[ chInputs[j], chPins[j], buttons[j] ]));
+			channels.push(E('div', { 'style': 'display:flex;gap:6px;align-items:center' }, [
+				chInputs[j], selA[j], E('span', { 'class': 'cbi-value-description' }, [ '↔' ]), selB[j], buttons[j]
+			]));
 		var row = E('tr', { 'class': 'tr' }, [
 			E('td', { 'class': 'td' }, [ input ]),
 			E('td', { 'class': 'td' }, [ status, E('br'), E('span', { 'class': 'cbi-value-description' }, [ dev.address || '-' ]) ]),
@@ -114,7 +131,9 @@ return view.extend({
 					'class': 'btn cbi-button cbi-button-save',
 					'click': function() {
 						return callSave(dev.id, input.value, dev.address,
-							chInputs[0].value, chInputs[1].value, chInputs[2].value, chInputs[3].value).then(function(res) {
+							chInputs[0].value, chInputs[1].value, chInputs[2].value, chInputs[3].value,
+							selA[0].value, selB[0].value, selA[1].value, selB[1].value,
+							selA[2].value, selB[2].value, selA[3].value, selB[3].value).then(function(res) {
 							if (!res || res.ok != 1) {
 								ui.addNotification(null, E('p', {}, [ '保存失败' ]), 'error');
 								return;
@@ -144,7 +163,8 @@ return view.extend({
 			status: status,
 			addr: row.children[1].lastChild,
 			chInputs: chInputs,
-			chPins: chPins,
+			selA: selA,
+			selB: selB,
 			buttons: buttons
 		};
 		return row;
@@ -177,11 +197,14 @@ return view.extend({
 			if (document.activeElement !== parts.nameInput)
 				parts.nameInput.value = dev.name || dev.id;
 			var names = this.channelNames(dev);
-			var pins = this.channelPins(dev);
+			var pairs = this.channelPinPairs(dev);
 			for (var k = 0; k < 4; k++) {
 				if (document.activeElement !== parts.chInputs[k])
 					parts.chInputs[k].value = names[k];
-				parts.chPins[k].textContent = pins[k] ? 'GPIO' + pins[k] : '未探测';
+				if (document.activeElement !== parts.selA[k] && pairs[k][0])
+					parts.selA[k].value = String(pairs[k][0]);
+				if (document.activeElement !== parts.selB[k] && pairs[k][1])
+					parts.selB[k].value = String(pairs[k][1]);
 				parts.buttons[k].textContent = names[k];
 			}
 		}
@@ -200,7 +223,7 @@ return view.extend({
 			E('tr', { 'class': 'tr table-titles' }, [
 				E('th', { 'class': 'th' }, [ '设备' ]),
 				E('th', { 'class': 'th' }, [ '状态' ]),
-				E('th', { 'class': 'th' }, [ '通道名称 / 引脚 / 短接触发' ]),
+				E('th', { 'class': 'th' }, [ '通道名称 / 引脚 A ↔ B / 短接触发' ]),
 				E('th', { 'class': 'th' }, [ '操作' ])
 			])
 		]);

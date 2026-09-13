@@ -6,8 +6,8 @@ iStoreOS / OpenWrt 的 LuCI 插件：自动发现局域网内广播 `_esp-switch
 
 - 用 `avahi-browse` 做 mDNS 发现，支持同时发现多台设备
 - HTTP 探测确认在线状态，并从设备取回通道名
-- 点通道按钮触发脉冲，脉冲时长在页面中可调（100-5000ms，默认 500）
-- 设备名与四路通道名可自定义（默认 A/B/C/D），页面显示每路对应的 GPIO 引脚
+- 点通道按钮把该路的两个引脚同时拉低，脉冲时长可调（100-5000ms，默认 500）
+- 设备名与四路通道名可自定义（默认 A/B/C/D），每路用两个下拉框选定引脚 A 与引脚 B（GPIO0/2/4/5/12/13/14/15/16）
 - 保存时同时写入 uci 并推送到设备，设备离线则只存 uci
 - 每 10 秒轮询已知设备；点“扫描设备”才做完整 mDNS 发现
 
@@ -46,7 +46,7 @@ tr -d '\r' < /root/deploy.sh > /root/d.sh && sh /root/d.sh
 | --- | --- | --- |
 | `devices` | `scan` | `scan=1` 做完整 mDNS 发现，`0` 只探测已知设备 |
 | `pulse` | `address`、`ch`、`ms` | 触发指定设备的通道 |
-| `save` | `id`、`name`、`address`、`ch1`-`ch4` | 写入 uci 并推送到设备 |
+| `save` | `id`、`name`、`address`、`ch1`-`ch4`、`a1`-`b4` | 写入 uci 并推送到设备 |
 | `remove` | `id` | 删除 uci 记录 |
 | `settings` | `pulse_ms`、`discover_timeout` | 读写全局设置 |
 
@@ -58,17 +58,26 @@ config settings 'settings'
 	option discover_timeout '5'
 
 config device 'dev_a4cf12ab34cd'
-	option name '书房主机'
+	option name '机柜'
 	option address '192.168.1.30'
 	option ch1 'A'
 	option ch2 'B'
 	option ch3 'C'
 	option ch4 'D'
+	option a1 '12'
+	option b1 '13'
+	option a2 '14'
+	option b2 '4'
+	option a3 '5'
+	option b3 '16'
+	option a4 '0'
+	option b4 '2'
 ```
 
 ## 注意事项
 
 - 插件文件必须为 LF 行尾，CRLF 会让 rpcd 脚本的 shebang 失效，`deploy.sh` 已统一转换
+- 插件里调用 curl 要用绝对路径 `/usr/bin/curl`：PATH 里的 `/usr/sbin/curl` 是包装脚本，在 rpcd 环境下会失败，导致所有设备显示离线
 - OpenWrt 的 busybox 不一定带 `timeout`，本插件用「后台 + sleep + kill -0」实现超时
 - 同一 mDNS 服务会在 br-lan / lo / docker0 重复出现，后端只取 br-lan 的 IPv4 记录
 - LuCI `menu.d` 的 `depends.acl` 必须是数组，写对象会导致 dispatcher 报 500
