@@ -253,9 +253,14 @@ approve() {
 }
 
 reject() {
-	local id
+	local id sec
 	json_get_var id id
-	if [ -n "$id" ]; then
+	if [ "$id" = "*" ]; then
+		for sec in $(ignore_secs); do
+			uci -q delete "$CFG.ignore_$sec"
+		done
+		uci -q commit "$CFG"
+	elif [ -n "$id" ]; then
 		uci -q delete "$CFG.dev_$id"
 		uci -q set "$CFG.ignore_$id=ignore"
 		uci -q commit "$CFG"
@@ -378,6 +383,9 @@ list)
 	json_add_string name ""
 	json_add_string address ""
 	json_close_object
+	json_add_object remove
+	json_add_string id ""
+	json_close_object
 	json_add_object reject
 	json_add_string id ""
 	json_close_object
@@ -413,7 +421,7 @@ call)
 	case "$2" in
 	devices) devices ;;
 	approve) approve ;;
-	reject) reject ;;
+	remove|reject) reject ;;
 	restore) restore ;;
 	pulse) pulse ;;
 	save) save ;;
