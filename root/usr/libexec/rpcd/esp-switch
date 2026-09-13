@@ -9,8 +9,12 @@ jf() {
 	echo "$1" | jsonfilter -e "$2" 2>/dev/null
 }
 
-fetch_info() {
-	"$CURL" -s -m 2 "http://$1/api/info" 2>/dev/null
+dev_secs() {
+	uci -q show "$CFG" 2>/dev/null | sed -n "s/^$CFG\.dev_\([^.]*\)=device$/\1/p"
+}
+
+ignore_secs() {
+	uci -q show "$CFG" 2>/dev/null | sed -n "s/^$CFG\.ignore_\([^.]*\)=.*$/\1/p"
 }
 
 uci_name() {
@@ -21,15 +25,98 @@ uci_addr() {
 	uci -q get "$CFG.dev_$1.address"
 }
 
-emit_device() {
-	local id="$1" addr="$2"
+is_paired() {
+	uci -q show "$CFG.dev_$1" >/dev/null 2>&1
+}
+
+is_ignored() {
+	[ -n "$(uci -q get "$CFG.ignore_$1")" ]
+}
+
+unique_name() {
+	local id="$1" base="$2" name n sec clash
+	[ -n "$base" ] || base="ESP-$id"
+	name="$base"
+	n=1
+	while :; do
+		clash=0
+		for sec in $(dev_secs); do
+			[ "$sec" = "$id" ] && continue
+			[ "$(uci_name "$sec")" = "$name" ] && clash=1
+		done
+		[ "$clash" = "0" ] && break
+		n=$((n + 1))
+		name="$base-$n"
+	done
+	echo "$name"
+}
+
+pair_device() {
+	local id="$1" addr="$2" name="$3"
+	[ -z "$id" ] && return 1
+	local sec="dev_$id" changed=0
+	is_paired "$id" || {
+		uci -q set "$CFG.$sec=device"
+		changed=1
+	}
+	if [ -n "$name" ] && [ "$(uci_name "$id")" != "$name" ]; then
+		uci -q set "$CFG.$sec.name=$name"
+		changed=1
+	fi
+	if [ -n "$addr" ] && [ "$(uci_addr "$id")" != "$addr" ]; then
+		uci -q set "$CFG.$sec.address=$addr"
+		changed=1
+	fi
+	[ "$changed" = "1" ] && uci -q commit "$CFG"
+	return 0
+}
+
+discover() {
+	local out="$1"
+	: >"$out"
+	command -v avahi-browse >/dev/null 2>&1 || return 0
+	local to
+	to="$(uci -q get $CFG.settings.discover_timeout)"
+	[ -z "$to" ] && to=5
+	local raw pick
+	raw="$(mktemp)"
+	pick="$(mktemp)"
+	avahi-browse -rtp _esp-switch._tcp >"$raw" 2>&1 &
+	local bpid=$!
+	local waited=0
+	while [ $waited -lt "$to" ]; do
+		sleep 1
+		waited=$((waited + 1))
+		kill -0 "$bpid" 2>/dev/null || break
+	done
+	kill "$bpid" 2>/dev/null
+	wait "$bpid" 2>/dev/null
+	grep '^=' "$raw" 2>/dev/null | awk -F';' '$2 == "br-lan" && $3 == "IPv4"' >"$pick"
+	[ -s "$pick" ] || grep '^=' "$raw" 2>/dev/null | awk -F';' '$3 == "IPv4" && $2 != "lo" && $2 != "docker0"' >"$pick"
+	rm -f "$raw"
+	local mark iface proto svcname stype domain host addr port txt id hname
+	while IFS=';' read -r mark iface proto svcname stype domain host addr port txt; do
+		[ "$mark" = "=" ] || continue
+		id="$(echo "$txt" | sed -n 's/.*"id=\([^"]*\)".*/\1/p')"
+		[ -z "$id" ] && id="$(echo "$host" | cut -d. -f1)"
+		[ -z "$id" ] && continue
+		hname="$(echo "$host" | cut -d. -f1)"
+		echo "$id|$hname|$addr" >>"$out"
+	done <"$pick"
+	rm -f "$pick"
+}
+
+item_json() {
+	local id="$1" host="$2" addr="$3" infofile="$4"
 	local info=""
-	[ -n "$addr" ] && info="$(fetch_info "$addr")"
+	if [ -n "$infofile" ] && [ -f "$infofile" ]; then
+		info="$(cat "$infofile")"
+	fi
 	if [ -n "$info" ] && [ -z "$(jf "$info" '@.id')" ]; then
 		info=""
 	fi
-	local name="" ip="" online=0 ch1="" ch2="" ch3="" ch4="" pins=""
-	local a1="" b1="" a2="" b2="" a3="" b3="" a4="" b4=""
+	local name="" ip="" online=0 pins=""
+	local ch1="" ch2="" ch3="" a1="" b1="" a2="" b2="" a3="" b3=""
 	if [ -n "$info" ]; then
 		online=1
 		name="$(jf "$info" '@.name')"
@@ -37,44 +124,40 @@ emit_device() {
 		ch1="$(jf "$info" '@.channels[0].name')"
 		ch2="$(jf "$info" '@.channels[1].name')"
 		ch3="$(jf "$info" '@.channels[2].name')"
-		ch4="$(jf "$info" '@.channels[3].name')"
 		a1="$(jf "$info" '@.channels[0].pinA')"
 		b1="$(jf "$info" '@.channels[0].pinB')"
 		a2="$(jf "$info" '@.channels[1].pinA')"
 		b2="$(jf "$info" '@.channels[1].pinB')"
 		a3="$(jf "$info" '@.channels[2].pinA')"
 		b3="$(jf "$info" '@.channels[2].pinB')"
-		a4="$(jf "$info" '@.channels[3].pinA')"
-		b4="$(jf "$info" '@.channels[3].pinB')"
 		pins="$(jf "$info" '@.pins' | tr -d '[] ')"
 		if [ -n "$ip" ]; then
 			local base_host="${addr%%:*}" base_port=""
 			case "$addr" in *:*) base_port=":${addr##*:}" ;; esac
-			if [ "$ip" = "$base_host" ]; then
-				addr="$base_host$base_port"
-			else
-				addr="$ip$base_port"
-			fi
+			[ "$ip" != "$base_host" ] && addr="$ip$base_port"
 		fi
+	fi
+	if is_paired "$id"; then
+		[ -n "$online" ] && [ "$online" = "1" ] && pair_device "$id" "$addr" ""
+	else
+		name="$(unique_name "$id" "$name")"
 	fi
 	local custom ucn
 	custom="$(uci_name "$id")"
 	[ -n "$custom" ] && name="$custom"
+	[ -z "$name" ] && name="$host"
 	[ -z "$name" ] && name="$id"
 	[ -z "$addr" ] && addr="$(uci_addr "$id")"
 	ucn="$(uci -q get "$CFG.dev_$id.ch1")"; [ -n "$ucn" ] && ch1="$ucn"
 	ucn="$(uci -q get "$CFG.dev_$id.ch2")"; [ -n "$ucn" ] && ch2="$ucn"
 	ucn="$(uci -q get "$CFG.dev_$id.ch3")"; [ -n "$ucn" ] && ch3="$ucn"
-	ucn="$(uci -q get "$CFG.dev_$id.ch4")"; [ -n "$ucn" ] && ch4="$ucn"
 	ucn="$(uci -q get "$CFG.dev_$id.a1")"; [ -n "$ucn" ] && a1="$ucn"
 	ucn="$(uci -q get "$CFG.dev_$id.b1")"; [ -n "$ucn" ] && b1="$ucn"
 	ucn="$(uci -q get "$CFG.dev_$id.a2")"; [ -n "$ucn" ] && a2="$ucn"
 	ucn="$(uci -q get "$CFG.dev_$id.b2")"; [ -n "$ucn" ] && b2="$ucn"
 	ucn="$(uci -q get "$CFG.dev_$id.a3")"; [ -n "$ucn" ] && a3="$ucn"
 	ucn="$(uci -q get "$CFG.dev_$id.b3")"; [ -n "$ucn" ] && b3="$ucn"
-	ucn="$(uci -q get "$CFG.dev_$id.a4")"; [ -n "$ucn" ] && a4="$ucn"
-	ucn="$(uci -q get "$CFG.dev_$id.b4")"; [ -n "$ucn" ] && b4="$ucn"
-	json_add_object
+	json_init
 	json_add_string id "$id"
 	json_add_string name "$name"
 	json_add_string address "$addr"
@@ -82,71 +165,106 @@ emit_device() {
 	json_add_string ch1 "$ch1"
 	json_add_string ch2 "$ch2"
 	json_add_string ch3 "$ch3"
-	json_add_string ch4 "$ch4"
 	json_add_string a1 "$a1"
 	json_add_string b1 "$b1"
 	json_add_string a2 "$a2"
 	json_add_string b2 "$b2"
 	json_add_string a3 "$a3"
 	json_add_string b3 "$b3"
-	json_add_string a4 "$a4"
-	json_add_string b4 "$b4"
+	json_add_string pinA "$a1"
+	json_add_string pinB "$b1"
 	json_add_string pins "$pins"
-	json_close_object
+	json_dump | tr -d '\n'
 }
 
 devices() {
-	local scan known do_discover=0
+	local scan known
 	json_get_var scan scan
-	known="$(uci -q show "$CFG" 2>/dev/null | sed -n "s/^$CFG\.\([^.]*\)=device$/\1/p" | wc -l)"
-	[ "$scan" != "0" ] && do_discover=1
-	[ "$known" = "0" ] && do_discover=1
-	local pick=""
-	if [ "$do_discover" = "1" ] && command -v avahi-browse >/dev/null 2>&1; then
-		local to
-		to="$(uci -q get $CFG.settings.discover_timeout)"
-		[ -z "$to" ] && to=5
-		local raw="$(mktemp)"
-		pick="$(mktemp)"
-		avahi-browse -rtp _esp-switch._tcp >"$raw" 2>&1 &
-		local bpid=$!
-		local waited=0
-		while [ $waited -lt "$to" ]; do
-			sleep 1
-			waited=$((waited + 1))
-			kill -0 "$bpid" 2>/dev/null || break
-		done
-		kill "$bpid" 2>/dev/null
-		wait "$bpid" 2>/dev/null
-		grep '^=' "$raw" 2>/dev/null | awk -F';' '$2 == "br-lan" && $3 == "IPv4"' >"$pick"
-		if [ ! -s "$pick" ]; then
-			grep '^=' "$raw" 2>/dev/null | awk -F';' '$3 == "IPv4" && $2 != "lo" && $2 != "docker0"' >"$pick"
+	known="$(dev_secs | wc -l)"
+	local do_scan=0
+	[ "$scan" != "0" ] && do_scan=1
+	[ "$known" = "0" ] && do_scan=1
+
+	local list
+	list="$(mktemp)"
+	if [ "$do_scan" = "1" ]; then
+		discover "$list"
+	fi
+	local sec id
+	for sec in $(dev_secs); do
+		id="${sec#dev_}"
+		grep -q "^$id|" "$list" || echo "$id||$(uci_addr "$id")" >>"$list"
+	done
+
+	local dir
+	dir="$(mktemp -d)"
+	local host addr
+	while IFS='|' read -r id host addr; do
+		if [ -n "$addr" ]; then
+			( "$CURL" -s -m 2 "http://$addr/api/info" >"$dir/$id" 2>/dev/null ) &
 		fi
-		rm -f "$raw"
+	done <"$list"
+	wait
+
+	local out_dev="" out_pend="" json
+	while IFS='|' read -r id host addr; do
+		[ -z "$id" ] && continue
+		is_ignored "$id" && continue
+		json="$(item_json "$id" "$host" "$addr" "$dir/$id")"
+		if is_paired "$id"; then
+			if [ -z "$out_dev" ]; then out_dev="$json"; else out_dev="$out_dev,$json"; fi
+		else
+			if [ -z "$out_pend" ]; then out_pend="$json"; else out_pend="$out_pend,$json"; fi
+		fi
+	done <"$list"
+	rm -rf "$list" "$dir"
+	printf '{"devices":[%s],"pending":[%s]}\n' "$out_dev" "$out_pend"
+}
+
+approve() {
+	local id name address
+	json_get_var id id
+	json_get_var name name
+	json_get_var address address
+	if [ -z "$id" ]; then
+		json_init
+		json_add_boolean ok 0
+		json_add_string error "missing id"
+		json_dump
+		return
+	fi
+	name="$(unique_name "$id" "$name")"
+	pair_device "$id" "$address" "$name"
+	if [ -n "$address" ]; then
+		"$CURL" -s -m 3 -X POST --data-urlencode "name=$name" "http://$address/api/config" >/dev/null 2>&1
 	fi
 	json_init
-	json_add_array devices
-	local seen="" id
-	if [ -n "$pick" ] && [ -s "$pick" ]; then
-		while IFS=';' read -r mark iface proto svcname stype domain host addr port txt; do
-			[ "$mark" = "=" ] || continue
-			id="$(echo "$txt" | sed -n 's/.*"id=\([^"]*\)".*/\1/p')"
-			[ -z "$id" ] && id="$(echo "$host" | cut -d. -f1)"
-			[ -z "$id" ] && continue
-			case " $seen " in *" $id "*) continue ;; esac
-			seen="$seen $id"
-			emit_device "$id" "$addr"
-		done <"$pick"
-		rm -f "$pick"
+	json_add_boolean ok 1
+	json_add_string name "$name"
+	json_dump
+}
+
+reject() {
+	local id
+	json_get_var id id
+	if [ -n "$id" ]; then
+		uci -q delete "$CFG.dev_$id"
+		uci -q set "$CFG.ignore_$id=ignore"
+		uci -q commit "$CFG"
 	fi
+	json_init
+	json_add_boolean ok 1
+	json_dump
+}
+
+restore() {
 	local sec
-	for sec in $(uci -q show "$CFG" 2>/dev/null | sed -n "s/^$CFG\.\([^.]*\)=device$/\1/p"); do
-		id="${sec#dev_}"
-		case " $seen " in *" $id "*) continue ;; esac
-		seen="$seen $id"
-		emit_device "$id" "$(uci_addr "$id")"
+	for sec in $(ignore_secs); do
+		uci -q delete "$CFG.ignore_$sec"
 	done
-	json_close_array
+	uci -q commit "$CFG"
+	json_init
+	json_add_boolean ok 1
 	json_dump
 }
 
@@ -188,8 +306,10 @@ save() {
 		json_dump
 		return
 	fi
+	name="$(unique_name "$id" "$name")"
 	local sec="dev_$id"
-	uci -q show "$CFG.$sec" >/dev/null 2>&1 || uci -q set "$CFG.$sec=device"
+	is_paired "$id" || uci -q set "$CFG.$sec=device"
+	uci -q delete "$CFG.ignore_$id" 2>/dev/null
 	[ -n "$name" ] && uci -q set "$CFG.$sec.name=$name"
 	[ -n "$address" ] && uci -q set "$CFG.$sec.address=$address"
 	local i key val
@@ -203,10 +323,9 @@ save() {
 	uci -q commit "$CFG"
 	local pushed=0
 	if [ -n "$address" ]; then
-		local ok=1 nm
-		nm="$(uci -q get "$CFG.$sec.name")"
-		if [ -n "$nm" ]; then
-			"$CURL" -s -m 3 -X POST --data-urlencode "name=$nm" "http://$address/api/config" >/dev/null 2>&1 || ok=0
+		local ok=1
+		if [ -n "$name" ]; then
+			"$CURL" -s -m 3 -X POST --data-urlencode "name=$name" "http://$address/api/config" >/dev/null 2>&1 || ok=0
 		fi
 		for i in 1 2 3 4; do
 			for key in "ch$i" "a$i" "b$i"; do
@@ -221,19 +340,7 @@ save() {
 	json_init
 	json_add_boolean ok 1
 	json_add_boolean pushed "$pushed"
-	json_dump
-}
-
-remove() {
-	local id
-	json_get_var id id
-	[ -z "$id" ] && id="$(jsonfilter -e '@.id' 2>/dev/null)"
-	if [ -n "$id" ]; then
-		uci -q delete "$CFG.dev_$id"
-		uci -q commit "$CFG"
-	fi
-	json_init
-	json_add_boolean ok 1
+	json_add_string name "$name"
 	json_dump
 }
 
@@ -257,6 +364,16 @@ list)
 	json_add_object devices
 	json_add_string scan 1
 	json_close_object
+	json_add_object approve
+	json_add_string id ""
+	json_add_string name ""
+	json_add_string address ""
+	json_close_object
+	json_add_object reject
+	json_add_string id ""
+	json_close_object
+	json_add_object restore
+	json_close_object
 	json_add_object pulse
 	json_add_string ch 1
 	json_add_string address ""
@@ -268,18 +385,12 @@ list)
 	json_add_string ch1 ""
 	json_add_string ch2 ""
 	json_add_string ch3 ""
-	json_add_string ch4 ""
 	json_add_string a1 ""
 	json_add_string b1 ""
 	json_add_string a2 ""
 	json_add_string b2 ""
 	json_add_string a3 ""
 	json_add_string b3 ""
-	json_add_string a4 ""
-	json_add_string b4 ""
-	json_close_object
-	json_add_object remove
-	json_add_string id ""
 	json_close_object
 	json_add_object settings
 	json_add_string pulse_ms ""
@@ -292,9 +403,11 @@ call)
 	json_load "$input"
 	case "$2" in
 	devices) devices ;;
+	approve) approve ;;
+	reject) reject ;;
+	restore) restore ;;
 	pulse) pulse ;;
 	save) save ;;
-	remove) remove ;;
 	settings) settings ;;
 	*)
 		json_init
