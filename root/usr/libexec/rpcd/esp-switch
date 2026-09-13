@@ -96,11 +96,14 @@ discover() {
 	[ -s "$pick" ] || grep '^=' "$raw" 2>/dev/null | awk -F';' '$3 == "IPv4" && $2 != "lo" && $2 != "docker0"' >"$pick"
 	rm -f "$raw"
 	local mark iface proto svcname stype domain host addr port txt id hname
+	local seen=""
 	while IFS=';' read -r mark iface proto svcname stype domain host addr port txt; do
 		[ "$mark" = "=" ] || continue
 		id="$(echo "$txt" | sed -n 's/.*"id=\([^"]*\)".*/\1/p')"
 		[ -z "$id" ] && id="$(echo "$host" | cut -d. -f1)"
 		[ -z "$id" ] && continue
+		case " $seen " in *" $id "*) continue ;; esac
+		seen="$seen $id"
 		hname="$(echo "$host" | cut -d. -f1)"
 		echo "$id|$hname|$addr" >>"$out"
 	done <"$pick"
@@ -179,8 +182,10 @@ item_json() {
 }
 
 devices() {
-	local scan known
+	local scan probe known
 	json_get_var scan scan
+	json_get_var probe probe
+	[ -z "$probe" ] && probe=1
 	known="$(dev_secs | wc -l)"
 	local do_scan=0
 	[ "$scan" != "0" ] && do_scan=1
@@ -200,12 +205,14 @@ devices() {
 	local dir
 	dir="$(mktemp -d)"
 	local host addr
-	while IFS='|' read -r id host addr; do
-		if [ -n "$addr" ]; then
-			( "$CURL" -s -m 2 "http://$addr/api/info" >"$dir/$id" 2>/dev/null ) &
-		fi
-	done <"$list"
-	wait
+	if [ "$probe" = "1" ]; then
+		while IFS='|' read -r id host addr; do
+			if [ -n "$addr" ]; then
+				( "$CURL" -s -m 2 "http://$addr/api/info" >"$dir/$id" 2>/dev/null ) &
+			fi
+		done <"$list"
+		wait
+	fi
 
 	local out_dev="" out_pend="" json
 	while IFS='|' read -r id host addr; do
@@ -364,6 +371,7 @@ list)
 	json_init
 	json_add_object devices
 	json_add_string scan 1
+	json_add_string probe 1
 	json_close_object
 	json_add_object approve
 	json_add_string id ""
