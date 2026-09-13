@@ -1,0 +1,13 @@
+{
+	"admin/services/esp-switch": {
+		"title": "ESP 开关",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "esp-switch/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-esp-switch" ]
+		}
+	}
+}

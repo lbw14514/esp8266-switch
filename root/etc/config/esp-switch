@@ -1,0 +1,3 @@
+config settings 'settings'
+	option pulse_ms '500'
+	option discover_timeout '5'
