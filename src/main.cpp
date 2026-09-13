@@ -20,9 +20,11 @@
 #define AP_FALLBACK_MS 30000UL
 #define RECONNECT_MS 15000UL
 
-static const uint8_t CH_DEFAULT_A[CH_COUNT] = {12, 14, 5, 0};
-static const uint8_t CH_DEFAULT_B[CH_COUNT] = {13, 4, 16, 2};
-static const uint8_t PIN_POOL[] = {0, 2, 4, 5, 12, 13, 14, 15, 16};
+#define PIN_UNSET 0xFF
+
+static const uint8_t CH_DEFAULT_A[CH_COUNT] = {12, 14, 5, PIN_UNSET};
+static const uint8_t CH_DEFAULT_B[CH_COUNT] = {13, 4, 16, PIN_UNSET};
+static const uint8_t PIN_POOL[] = {4, 5, 12, 13, 14, 16};
 #define PIN_POOL_SIZE (sizeof(PIN_POOL) / sizeof(PIN_POOL[0]))
 static const char *CH_DEFAULT_NAMES[CH_COUNT] = {"A", "B", "C", "D"};
 
@@ -103,11 +105,19 @@ static bool pinAllowed(int pin) {
 }
 
 static void chanRelease(int index) {
-  digitalWrite(cfg.pinA[index], LOW);
-  pinMode(cfg.pinA[index], INPUT);
-  digitalWrite(cfg.pinB[index], LOW);
-  pinMode(cfg.pinB[index], INPUT);
+  if (cfg.pinA[index] != PIN_UNSET) {
+    digitalWrite(cfg.pinA[index], LOW);
+    pinMode(cfg.pinA[index], INPUT);
+  }
+  if (cfg.pinB[index] != PIN_UNSET) {
+    digitalWrite(cfg.pinB[index], LOW);
+    pinMode(cfg.pinB[index], INPUT);
+  }
   chRun[index].active = false;
+}
+
+static bool chanConfigured(int index) {
+  return cfg.pinA[index] != PIN_UNSET && cfg.pinB[index] != PIN_UNSET && cfg.pinA[index] != cfg.pinB[index];
 }
 
 static void configDefaults() {
@@ -142,7 +152,9 @@ static void configLoad() {
   }
   for (int i = 0; i < CH_COUNT; i++) {
     cfg.chan[i][sizeof(cfg.chan[i]) - 1] = 0;
-    if (!pinAllowed(cfg.pinA[i]) || !pinAllowed(cfg.pinB[i]) || cfg.pinA[i] == cfg.pinB[i]) {
+    if ((cfg.pinA[i] != PIN_UNSET && !pinAllowed(cfg.pinA[i])) ||
+        (cfg.pinB[i] != PIN_UNSET && !pinAllowed(cfg.pinB[i])) ||
+        (cfg.pinA[i] != PIN_UNSET && cfg.pinA[i] == cfg.pinB[i])) {
       cfg.pinA[i] = CH_DEFAULT_A[i];
       cfg.pinB[i] = CH_DEFAULT_B[i];
     }
@@ -154,10 +166,14 @@ static void configLoad() {
 
 static void chanInit() {
   for (int i = 0; i < CH_COUNT; i++) {
-    digitalWrite(cfg.pinA[i], LOW);
-    pinMode(cfg.pinA[i], INPUT);
-    digitalWrite(cfg.pinB[i], LOW);
-    pinMode(cfg.pinB[i], INPUT);
+    if (cfg.pinA[i] != PIN_UNSET) {
+      digitalWrite(cfg.pinA[i], LOW);
+      pinMode(cfg.pinA[i], INPUT);
+    }
+    if (cfg.pinB[i] != PIN_UNSET) {
+      digitalWrite(cfg.pinB[i], LOW);
+      pinMode(cfg.pinB[i], INPUT);
+    }
     chRun[i].active = false;
     chRun[i].start = 0;
     chRun[i].ms = 0;
@@ -174,7 +190,7 @@ static void chanPulse(int index, uint16_t ms) {
   if (ms > MAX_PULSE_MS) {
     ms = MAX_PULSE_MS;
   }
-  if (cfg.pinA[index] == cfg.pinB[index]) {
+  if (!chanConfigured(index)) {
     return;
   }
   digitalWrite(cfg.pinA[index], LOW);
@@ -324,9 +340,9 @@ static String infoJson() {
     body += ",\"name\":\"";
     body += jsonEscape(cfg.chan[i]);
     body += "\",\"pinA\":";
-    body += String(cfg.pinA[i]);
+    body += String(cfg.pinA[i] == PIN_UNSET ? -1 : (int)cfg.pinA[i]);
     body += ",\"pinB\":";
-    body += String(cfg.pinB[i]);
+    body += String(cfg.pinB[i] == PIN_UNSET ? -1 : (int)cfg.pinB[i]);
     body += ",\"active\":";
     body += (chRun[i].active ? "true" : "false");
     body += '}';
@@ -365,7 +381,7 @@ static String pageHtml() {
   h += F("async function api(u){const r=await fetch(u);return r.headers.get('content-type').includes('json')?r.json():r.text();}");
   h += F("function render(){if(!info)return;document.getElementById('sub').textContent=info.name+' | '+info.mode+' | '+info.ip+' | '+info.id;");
   h += F("let box=document.getElementById('chs');box.innerHTML='';info.channels.forEach(c=>{");
-  h += F("let d=document.createElement('div');d.className='ch';d.innerHTML='<b>'+c.name+'</b><span class=\"muted\">GPIO'+c.pinA+' + GPIO'+c.pinB+'</span>';box.appendChild(d);});");
+  h += F("let d=document.createElement('div');d.className='ch';d.innerHTML='<b>'+c.name+'</b><span class=\"muted\">'+(c.pinA<0||c.pinB<0?'未使用':'GPIO'+c.pinA+' + GPIO'+c.pinB)+'</span>';box.appendChild(d);});");
   h += F("document.getElementById('dev').value=info.name;document.getElementById('pms').value=info.pulse_ms;}");
   h += F("async function refresh(){info=await api('/api/info');render();}");
   h += F("async function saveDev(){await fetch('/api/config?name='+encodeURIComponent(document.getElementById('dev').value)+'&pulse_ms='+document.getElementById('pms').value);refresh();}");
@@ -406,6 +422,10 @@ static void handlePulse() {
     server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad channel\"}");
     return;
   }
+  if (!chanConfigured(ch - 1)) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"channel not configured\"}");
+    return;
+  }
   chanPulse(ch - 1, ms);
   String body = "{\"ok\":true,\"ch\":" + String(ch) + ",\"ms\":" + String(ms) + "}";
   server.send(200, "application/json", body);
@@ -435,21 +455,27 @@ static void handleConfig() {
     String ka = "a" + String(i);
     String kb = "b" + String(i);
     if (server.hasArg(ka)) {
-      int v = server.arg(ka).toInt();
-      if (pinAllowed(v)) {
-        cfg.pinA[i - 1] = (uint8_t)v;
+      String v = server.arg(ka);
+      int pin = v.toInt();
+      if (v == "none" || v == "-1") {
+        cfg.pinA[i - 1] = PIN_UNSET;
+      } else if (v.length() && pinAllowed(pin)) {
+        cfg.pinA[i - 1] = (uint8_t)pin;
       }
     }
     if (server.hasArg(kb)) {
-      int v = server.arg(kb).toInt();
-      if (pinAllowed(v) && v != cfg.pinA[i - 1]) {
-        cfg.pinB[i - 1] = (uint8_t)v;
+      String v = server.arg(kb);
+      int pin = v.toInt();
+      if (v == "none" || v == "-1") {
+        cfg.pinB[i - 1] = PIN_UNSET;
+      } else if (v.length() && pinAllowed(pin) && pin != cfg.pinA[i - 1]) {
+        cfg.pinB[i - 1] = (uint8_t)pin;
       }
     }
   }
   for (int i = 0; i < CH_COUNT; i++) {
-    if (cfg.pinA[i] == cfg.pinB[i]) {
-      cfg.pinB[i] = CH_DEFAULT_B[i];
+    if (cfg.pinA[i] != PIN_UNSET && cfg.pinA[i] == cfg.pinB[i]) {
+      cfg.pinB[i] = PIN_UNSET;
     }
     chanRelease(i);
   }
