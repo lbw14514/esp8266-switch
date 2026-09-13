@@ -32,6 +32,7 @@
 
 ## 固件
 
+编译与烧录（`pio` 位于 `C:\Users\admin\.platformio\penv\Scripts\platformio.exe`，已加入 PATH）：
 
 ```bash
 cd firmware
