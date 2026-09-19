@@ -21,7 +21,6 @@
 ## 编译与烧录
 
 ```bash
-cd firmware
 pio run                # 编译
 pio run -t upload      # 烧录，需要接好串口
 pio device monitor     # 串口日志 115200
