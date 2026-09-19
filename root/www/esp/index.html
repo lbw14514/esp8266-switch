@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP 开关</title>
+<style>
+:root{--bg:#0f1319;--card:#171d26;--line:#273040;--fg:#e6edf3;--mut:#8794a5;--acc:#2f81f7;--ok:#2ea043;--wa:#d29922;--dan:#da3633}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
+h1{font-size:17px;margin:0;font-weight:600}
+.tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,input,select{font:inherit;color:var(--fg);background:#1f2733;border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+button{cursor:pointer}
+button:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button.danger{background:#2a1518;border-color:#5c2226;color:#ff9a9a}
+button.ghost{background:transparent}
+a{color:var(--acc)}
+input[type=number]{width:5.5em}
+main{padding:16px 18px 40px;max-width:1180px;margin:0 auto}
+#msg{min-height:22px;color:var(--mut);margin-bottom:8px}
+#msg.err{color:#ff9a9a}
+#msg.ok{color:#7ee787}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+.card h2{margin:0 0 4px;font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mut{color:var(--mut);font-size:12.5px}
+.tag{font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid}
+.tag.ok{color:#7ee787;border-color:#2ea04355;background:#2ea04322}
+.tag.wa{color:#e3b341;border-color:#d2992255;background:#d2992222}
+.ch{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}
+.ch input[type=text]{width:5.5em}
+.ch select{width:7.5em}
+.sep{color:var(--mut)}
+.btns{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(430px,1fr))}
+#modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:20;padding:16px}
+#modal.on{display:flex}
+#gate{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;justify-content:center;z-index:30;padding:16px}
+#gate.on{display:flex}
+#gate .box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;max-width:380px;width:100%}
+#gate h3{margin:0 0 6px;font-size:16px}
+#gate .row{display:flex;gap:8px;margin-top:12px}
+#gate input{flex:1}
+#modal .box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;max-width:420px;width:100%}
+#modal h3{margin:0 0 8px;font-size:16px}
+#modal .row{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.empty{color:var(--mut);text-align:center;padding:26px 0}
+</style>
+</head>
+<body>
+<header>
+	<h1>ESP 开关</h1>
+	<div class="tools">
+		<span class="mut">脉冲时长</span>
+		<input id="pulse" type="number" min="100" max="5000" step="50">
+		<span class="mut">ms</span>
+		<button id="b-pulse" class="ghost">保存</button>
+		<button id="b-scan" class="primary">扫描设备</button>
+		<button id="b-restore" class="ghost">恢复已忽略</button>
+		<a href="/cgi-bin/luci/admin/services/esp-switch">LuCI 界面</a>
+	</div>
+</header>
+<main>
+	<div id="msg"></div>
+	<div id="pending"></div>
+	<div id="devices" class="grid"></div>
+</main>
+<div id="gate"><div class="box">
+	<h3>需要密码</h3>
+	<p id="gate-hint" class="mut">请输入独立界面密码</p>
+	<div class="row">
+		<input id="gate-pass" type="password" placeholder="密码">
+		<button id="gate-ok" class="primary">进入</button>
+	</div>
+</div></div>
+<div id="modal"><div class="box">
+	<h3 id="m-title"></h3>
+	<p id="m-body" class="mut"></p>
+	<div class="row">
+		<button id="m-no" class="ghost">不同意</button>
+		<button id="m-yes" class="primary">同意</button>
+	</div>
+</div></div>
+<script>
+'use strict';
+var CH = 3;
+var pulseMs = 500;
+var asking = false;
+var lastIds = null;
+
+var memPass = '';
+var gateShown = false;
+
+function pass() {
+	if (memPass) return memPass;
+	try { return localStorage.getItem('esp_pass') || ''; }
+	catch (e) { return ''; }
+}
+
+function setPass(v) {
+	memPass = v;
+	try { localStorage.setItem('esp_pass', v); } catch (e) {}
+}
+
+function clearPass() {
+	memPass = '';
+	try { localStorage.removeItem('esp_pass'); } catch (e) {}
+}
+
+function showGate(msg) {
+	gateShown = true;
+	if (msg)
+		document.getElementById('gate-hint').textContent = msg;
+	document.getElementById('gate').classList.add('on');
+}
+
+function api(method, params) {
+	return fetch('/cgi-bin/esp-api', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		credentials: 'same-origin',
+		body: JSON.stringify({ method: method, params: params || {}, pass: pass() })
+	}).then(function (r) {
+		return r.text().then(function (t) {
+			var j = null;
+			try { j = JSON.parse(t); } catch (e) { throw new Error('响应异常：' + t.slice(0, 80)); }
+			if (j && j.error) {
+				if (j.error === 'no_password' || j.error === 'unauthorized') {
+					clearPass();
+					if (typeof gateShown === 'undefined' || !gateShown) {
+						showGate(j.error === 'no_password' ? '尚未设置密码，请先在 LuCI 的 ESP 开关页面里设置独立界面密码' : '密码错误，请重新输入');
+					}
+				}
+				throw new Error(j.error);
+			}
+			return j;
+		});
+	});
+}
+
+function say(text, cls) {
+	var m = document.getElementById('msg');
+	m.textContent = text || '';
+	m.className = cls || '';
+}
+
+function pinSet(v) { return v != null && v !== '' && v != -1 && v != '-1' && v != 'none'; }
+
+function pool(dev) {
+	if (dev.pins && String(dev.pins).length) return String(dev.pins).split(',');
+	return ['4', '5', '12', '13', '14', '16'];
+}
+
+function names(dev) {
+	var n = [dev.ch1, dev.ch2, dev.ch3], out = [];
+	for (var i = 0; i < CH; i++) out.push((n[i] && n[i].length) ? n[i] : String.fromCharCode(65 + i));
+	return out;
+}
+
+function pairs(dev) { return [[dev.a1, dev.b1], [dev.a2, dev.b2], [dev.a3, dev.b3]]; }
+
+function availPins(p, pr, ci, slot) {
+	var used = {}, i, k;
+	for (i = 0; i < CH; i++) for (k = 0; k < 2; k++) {
+		if (i === ci && k === slot) continue;
+		if (pinSet(pr[i][k])) used[String(pr[i][k])] = 1;
+	}
+	var out = p.filter(function (x) { return !used[String(x)]; });
+	var cur = pr[ci][slot];
+	if (pinSet(cur) && out.indexOf(String(cur)) < 0) out.push(String(cur));
+	out.sort(function (a, b) { return Number(a) - Number(b); });
+	return out;
+}
+
+function el(tag, attrs, kids) {
+	var n = document.createElement(tag);
+	attrs = attrs || {};
+	Object.keys(attrs).forEach(function (k) {
+		if (k === 'text') n.textContent = attrs[k];
+		else if (k === 'onclick') n.onclick = attrs[k];
+		else if (attrs[k] != null) n.setAttribute(k, attrs[k]);
+	});
+	(kids || []).forEach(function (c) { n.appendChild(c); });
+	return n;
+}
+
+function fillSelect(sel, list, value) {
+	sel.innerHTML = '';
+	var set = pinSet(value);
+	sel.appendChild(el('option', { value: '', selected: set ? null : 'selected', text: '未使用' }));
+	var found = false;
+	list.forEach(function (p) {
+		var hit = set && String(p) == String(value);
+		if (hit) found = true;
+		sel.appendChild(el('option', { value: p, selected: hit ? 'selected' : null, text: 'GPIO' + p }));
+	});
+	if (set && !found) sel.appendChild(el('option', { value: String(value), selected: 'selected', text: 'GPIO' + value }));
+	sel.value = set ? String(value) : '';
+}
+
+function makeCard(dev) {
+	var p = pool(dev), pr = pairs(dev), nm = names(dev);
+	var nameIn = el('input', { type: 'text', value: dev.name || dev.id });
+	var tag = el('span', { 'class': 'tag ' + (dev.online == 1 ? 'ok' : 'wa'), text: dev.online == 1 ? '在线' : '离线' });
+	var head = el('h2', {}, [nameIn, tag, el('span', { 'class': 'mut', text: dev.address || '-' })]);
+	var card = el('div', { 'class': 'card' }, [head]);
+
+	var selA = [], selB = [], chIn = [], btn = [];
+	var cur = pr.map(function (x) { return [pinSet(x[0]) ? String(x[0]) : '', pinSet(x[1]) ? String(x[1]) : '']; });
+
+	function apply() {
+		for (var i = 0; i < CH; i++) {
+			fillSelect(selA[i], availPins(p, cur, i, 0), cur[i][0]);
+			fillSelect(selB[i], availPins(p, cur, i, 1), cur[i][1]);
+		}
+	}
+	function onChange() {
+		for (var i = 0; i < CH; i++) { cur[i][0] = selA[i].value; cur[i][1] = selB[i].value; }
+		apply();
+	}
+
+	for (var i = 0; i < CH; i++) {
+		chIn.push(el('input', { type: 'text', value: nm[i] }));
+		selA.push(el('select', {}));
+		selB.push(el('select', {}));
+		(function (idx) {
+			var b = el('button', { 'class': 'primary', text: nm[idx] });
+			b.onclick = function () {
+				b.disabled = true;
+				api('pulse', { address: dev.address, ch: String(idx + 1), ms: String(pulseMs) }).then(function (r) {
+					say((r && r.ok == 1) ? ('已触发 ' + (dev.name || dev.id) + ' 通道 ' + (idx + 1)) : ('触发失败：' + ((r && r.error) || '设备不可达')), (r && r.ok == 1) ? 'ok' : 'err');
+				}).catch(function (e) {
+					say('触发失败：' + e.message, 'err');
+				}).then(function () { b.disabled = false; });
+			};
+			btn.push(b);
+		})(i);
+	}
+	for (i = 0; i < CH; i++) {
+		selA[i].onchange = onChange;
+		selB[i].onchange = onChange;
+	}
+	apply();
+
+	for (i = 0; i < CH; i++) {
+		card.appendChild(el('div', { 'class': 'ch' }, [
+			chIn[i], selA[i], el('span', { 'class': 'sep', text: '↔' }), selB[i], btn[i]
+		]));
+	}
+
+	var save = el('button', { 'class': 'primary', text: '保存' });
+	save.onclick = function () {
+		var v = function (s) { return s.value ? s.value : 'none'; };
+		save.disabled = true;
+		api('save', {
+			id: dev.id, name: nameIn.value, address: dev.address,
+			ch1: chIn[0].value, ch2: chIn[1].value, ch3: chIn[2].value,
+			a1: v(selA[0]), b1: v(selB[0]), a2: v(selA[1]), b2: v(selB[1]), a3: v(selA[2]), b3: v(selB[2])
+		}).then(function (r) {
+			if (!r || r.ok != 1) throw new Error('保存失败');
+			say(r.pushed == 1 ? '已保存并同步到设备' : '已保存（设备离线，未同步）', 'ok');
+			return refresh(false);
+		}).catch(function (e) { say(e.message, 'err'); }).then(function () { save.disabled = false; });
+	};
+
+	var del = el('button', { 'class': 'danger', text: '移除' });
+	del.onclick = function () {
+		if (!confirm('移除设备 ' + (dev.name || dev.id) + ' ？移除后不会再被自动发现，可用「恢复已忽略」找回')) return;
+		api('reject', { id: dev.id }).then(function () { say('已加入忽略列表', 'ok'); return refresh(false); })
+			.catch(function (e) { say('移除失败：' + e.message, 'err'); });
+	};
+
+	card.appendChild(el('div', { 'class': 'btns' }, [save, del]));
+	return card;
+}
+
+function showModal(p) {
+	var m = document.getElementById('modal');
+	document.getElementById('m-title').textContent = '发现新设备';
+	document.getElementById('m-body').textContent = '「' + (p.name || p.id) + '」想要与您配对，是否同意？（地址 ' + (p.address || '未知') + ' · ' + p.id + '）';
+	m.classList.add('on');
+	document.getElementById('m-yes').onclick = function () {
+		m.classList.remove('on'); asking = false;
+		api('approve', { id: p.id, name: p.name || p.id, address: p.address }).then(function (r) {
+			say('已配对：' + ((r && r.name) || p.id), 'ok');
+			return refresh(false);
+		}).catch(function (e) { say('配对失败：' + e.message, 'err'); });
+	};
+	document.getElementById('m-no').onclick = function () {
+		m.classList.remove('on'); asking = false;
+		api('reject', { id: p.id }).then(function () { say('已忽略该设备', 'ok'); return refresh(false); })
+			.catch(function (e) { say('操作失败：' + e.message, 'err'); });
+	};
+}
+
+function askPending(list) {
+	var pend = (list && list.pending) ? list.pending : [];
+	if (!pend.length || asking) return;
+	asking = true;
+	showModal(pend[0]);
+}
+
+function render(list) {
+	var box = document.getElementById('devices');
+	var devs = (list && list.devices) ? list.devices : [];
+	var ids = devs.map(function (d) { return d.id; }).join(',');
+	if (ids === lastIds) {
+		for (var i = 0; i < devs.length; i++) {
+			if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+		}
+		var tags = box.querySelectorAll('.tag');
+		for (i = 0; i < devs.length && i < tags.length; i++) {
+			tags[i].textContent = devs[i].online == 1 ? '在线' : '离线';
+			tags[i].className = 'tag ' + (devs[i].online == 1 ? 'ok' : 'wa');
+		}
+		return;
+	}
+	lastIds = ids;
+	box.innerHTML = '';
+	if (!devs.length) {
+		box.appendChild(el('div', { 'class': 'empty', text: '暂无已配对设备，点「扫描设备」查找局域网内的 ESP8266' }));
+		return;
+	}
+	devs.forEach(function (d) { box.appendChild(makeCard(d)); });
+}
+
+function refresh(scan) {
+	return api('devices', { scan: scan ? '1' : '0', probe: '1' }).then(function (list) {
+		gateShown = false;
+		render(list);
+		askPending(list);
+	}).catch(function (e) {
+		if (e.message !== 'unauthorized' && e.message !== 'no_password')
+			say(e.message, 'err');
+	});
+}
+
+function boot() {
+	api('settings', {}).then(function (r) {
+		if (r && r.pulse_ms) pulseMs = parseInt(r.pulse_ms, 10) || 500;
+	}).catch(function () {
+	}).then(function () {
+		document.getElementById('pulse').value = String(pulseMs);
+		return refresh(false);
+	}).then(function () {
+		return refresh(true);
+	});
+}
+var started = false;
+var timer = null;
+
+function start(force) {
+	if (started && !force)
+		return;
+	started = true;
+	if (timer)
+		clearInterval(timer);
+	timer = setInterval(function () { refresh(false); }, 10000);
+	boot();
+}
+
+document.getElementById('gate-ok').onclick = function () {
+	var v = document.getElementById('gate-pass').value;
+	if (!v)
+		return;
+	setPass(v);
+	say('');
+	document.getElementById('gate').classList.remove('on');
+	start(true);
+};
+
+document.getElementById('gate-pass').addEventListener('keydown', function (ev) {
+	if (ev.key === 'Enter')
+		document.getElementById('gate-ok').click();
+});
+
+start();
+
+document.getElementById('b-pulse').onclick = function () {
+	var v = parseInt(document.getElementById('pulse').value, 10) || 500;
+	if (v < 100) v = 100;
+	if (v > 5000) v = 5000;
+	pulseMs = v;
+	document.getElementById('pulse').value = String(v);
+	api('settings', { pulse_ms: String(v), discover_timeout: '' }).then(function () {
+		say('已保存脉冲时长 ' + v + ' ms', 'ok');
+	}).catch(function (e) { say(e.message, 'err'); });
+};
+
+document.getElementById('b-scan').onclick = function () {
+	say('正在扫描…');
+	lastIds = null;
+	refresh(true).then(function () { say('扫描完成', 'ok'); });
+};
+
+document.getElementById('b-restore').onclick = function () {
+	api('restore', {}).then(function () {
+		say('已恢复被忽略的设备', 'ok');
+		return refresh(false);
+	}).catch(function (e) { say(e.message, 'err'); });
+};
+</script>
+</body>
+</html>

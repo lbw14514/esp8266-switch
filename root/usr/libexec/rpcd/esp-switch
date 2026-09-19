@@ -344,16 +344,25 @@ save() {
 }
 
 settings() {
-	local pulse_ms discover_timeout
+	local pulse_ms discover_timeout webui_password
 	json_get_var pulse_ms pulse_ms
 	json_get_var discover_timeout discover_timeout
+	json_get_var webui_password webui_password
 	[ -n "$pulse_ms" ] && uci -q set "$CFG.settings.pulse_ms=$pulse_ms"
 	[ -n "$discover_timeout" ] && uci -q set "$CFG.settings.discover_timeout=$discover_timeout"
+	if [ -n "$webui_password" ]; then
+		if [ "$webui_password" = "none" ]; then
+			uci -q delete "$CFG.settings.webui_password"
+		else
+			uci -q set "$CFG.settings.webui_password=$(printf '%s' "$webui_password" | sha256sum | cut -d' ' -f1)"
+		fi
+	fi
 	uci -q commit "$CFG"
 	json_init
 	json_add_boolean ok 1
 	json_add_string pulse_ms "$(uci -q get $CFG.settings.pulse_ms)"
 	json_add_string discover_timeout "$(uci -q get $CFG.settings.discover_timeout)"
+	json_add_boolean webui_enabled "$([ -n "$(uci -q get $CFG.settings.webui_password)" ] && echo 1 || echo 0)"
 	json_dump
 }
 
@@ -398,6 +407,7 @@ list)
 	json_add_object settings
 	json_add_string pulse_ms ""
 	json_add_string discover_timeout ""
+	json_add_string webui_password ""
 	json_close_object
 	json_dump
 	;;

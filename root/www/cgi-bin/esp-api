@@ -1,0 +1,50 @@
+#!/bin/sh
+
+reply() {
+	printf 'Content-Type: application/json\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf '\r\n'
+	printf '%s\n' "$1"
+	exit 0
+}
+
+err() {
+	reply "{\"error\":\"$1\"}"
+}
+
+BODY=""
+if [ "${CONTENT_LENGTH:-0}" -gt 0 ] 2>/dev/null; then
+	BODY="$(dd bs=1 count="$CONTENT_LENGTH" 2>/dev/null)"
+fi
+[ -n "$BODY" ] || BODY="${QUERY_STRING:-}"
+[ -n "$BODY" ] || err "empty request"
+
+METHOD="$(printf '%s' "$BODY" | jsonfilter -e '@.method' 2>/dev/null)"
+[ -n "$METHOD" ] || err "missing method"
+
+PARAMS="$(printf '%s' "$BODY" | jsonfilter -e '@.params' 2>/dev/null)"
+[ -n "$PARAMS" ] || PARAMS="{}"
+
+case "$METHOD" in
+devices | approve | remove | reject | restore | pulse | save | settings) ;;
+*) err "unknown method" ;;
+esac
+
+STORED="$(uci -q get esp-switch.settings.webui_password)"
+[ -n "$STORED" ] || err "no_password"
+
+PASS="$(printf '%s' "$BODY" | jsonfilter -e '@.pass' 2>/dev/null)"
+if [ -z "$PASS" ]; then
+	case "${HTTP_AUTHORIZATION:-}" in
+	Basic\ *) PASS="$(printf '%s' "${HTTP_AUTHORIZATION#Basic }" | base64 -d 2>/dev/null | sed 's/:.*//')" ;;
+	esac
+fi
+HASH=""
+[ -n "$PASS" ] && HASH="$(printf '%s' "$PASS" | sha256sum | cut -d' ' -f1)"
+[ -n "$HASH" ] && [ "$HASH" = "$STORED" ] || err "unauthorized"
+
+OUT="$(ubus -t 45 call esp-switch "$METHOD" "$PARAMS" 2>/dev/null)"
+case "$OUT" in
+'{'*) reply "$OUT" ;;
+*) err "call failed" ;;
+esac

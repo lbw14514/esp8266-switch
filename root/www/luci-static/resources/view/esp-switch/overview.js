@@ -78,7 +78,7 @@ var pairDevice = function(p) {
 var callSettings = rpc.declare({
 	object: 'esp-switch',
 	method: 'settings',
-	params: [ 'pulse_ms', 'discover_timeout' ],
+	params: [ 'pulse_ms', 'discover_timeout', 'webui_password' ],
 	expect: {}
 });
 
@@ -421,6 +421,13 @@ return view.extend({
 			'style': 'width:6em'
 		});
 
+		var gateInput = E('input', {
+			'type': 'text',
+			'class': 'cbi-input-text',
+			'placeholder': '留空不修改',
+			'style': 'width:14em'
+		});
+
 		poll.add(function() {
 			return self.refresh(false);
 		}, 10);
@@ -446,7 +453,7 @@ return view.extend({
 							'click': function() {
 								self.pulseMs = parseInt(pulseInput.value, 10) || 500;
 								pulseInput.value = String(self.pulseMs);
-								return callSettings(String(self.pulseMs), '').then(function() {
+								return callSettings(String(self.pulseMs), '', '').then(function() {
 									ui.addNotification(null, E('p', {}, [ '已保存脉冲时长' ]));
 								});
 							}
@@ -471,7 +478,33 @@ return view.extend({
 									ui.addNotification(null, E('p', {}, [ '恢复失败：' + e ]), 'error');
 								});
 							}
-						}, [ '恢复已忽略设备' ])
+						}, [ '恢复已忽略设备' ]),
+						' ',
+						E('button', {
+							'class': 'btn cbi-button',
+							'click': function() {
+								window.open('/esp/', '_blank');
+							}
+						}, [ '独立界面' ])
+					])
+				]),
+				E('div', { 'class': 'cbi-value' }, [
+					E('label', { 'class': 'cbi-value-title' }, [ '独立界面密码' ]),
+					E('div', { 'class': 'cbi-value-field' }, [
+						gateInput,
+						' ',
+						E('button', {
+							'class': 'btn cbi-button cbi-button-save',
+							'click': function() {
+								var v = gateInput.value;
+								return callSettings('', '', v).then(function() {
+									gateInput.value = '';
+									ui.addNotification(null, E('p', {}, [ v === 'none' ? '已关闭独立界面' : (v ? '已设置独立界面密码' : '未修改') ]));
+								});
+							}
+						}, [ '保存' ]),
+						' ',
+						E('span', { 'class': 'cbi-value-description' }, [ '留空表示不修改，填 none 表示关闭独立界面' ])
 					])
 				])
 			]),
