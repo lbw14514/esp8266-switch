@@ -56,4 +56,4 @@ pio device monitor     # 串口日志 115200
 
 ## 配套插件
 
-软路由侧使用 `esp8266-switch` 仓库 `plugin` 分支的 LuCI 插件（`luci-app-esp-switch`），从该仓库 Release 下载 ipk 安装。
+软路由侧使用 `esp8266-switch` 仓库 `luci-app` 分支的 LuCI 插件（`luci-app-esp-switch`），从该仓库 Release 下载 ipk 安装。
