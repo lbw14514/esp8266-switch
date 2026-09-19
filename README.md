@@ -2,13 +2,6 @@
 
 用 ESP8266 的 GPIO 短接主板 PWR_SW 触点实现远程开机，iStoreOS 上提供 LuCI 插件自动发现设备并在 WebUI 中控制。
 
-## 组成
-
-| 目录 | 内容 |
-| --- | --- |
-| `firmware/` | ESP8266 固件（PlatformIO + Arduino Core，3 路低电平脉冲、mDNS、HTTP API、OTA、AP 配网） |
-| `luci-app-esp-switch/root/` | iStoreOS 插件文件树（rpcd 后端 + LuCI JS 前端 + uci 配置 + ACL + 菜单） |
-
 ## 硬件接线
 
 主板开机是干接点（PWR_SW 两股线），所以每路用**两个 GPIO 分别接这两股线**，触发时两脚同时拉低形成通路（共地），松开后两脚回到高阻。
