@@ -32,10 +32,9 @@
 编译与烧录：
 
 ```bash
-cd firmware
 pio run                # 编译
 pio run -t upload      # 烧录，需要接好串口
-pio device monitor     # 串口日志 115200
+pio device monitor     # 串口 115200
 ```
 
 ### 首次配网
@@ -83,31 +82,3 @@ opkg install /tmp/luci-app-esp-switch_1.3.1_all.ipk
 - 点通道按钮即把该路的两个引脚同时拉低 `pulse_ms` 毫秒，默认 500
 - 保存时同时写入 uci 并推送到设备；设备离线则只存 uci，上线后再保存即可下发
 - 脉冲时长保存在 `/etc/config/esp-switch` 的 `settings.pulse_ms`
-
-主要 uci 结构：
-
-```
-config settings 'settings'
-	option pulse_ms '500'
-	option discover_timeout '5'
-
-config device 'dev_a4cf12ab34cd'
-	option name '机柜'
-	option address '192.168.1.30'
-	option ch1 'A'
-	option ch2 'B'
-	option ch3 'C'
-	option a1 '12'
-	option b1 '13'
-	option a2 '14'
-	option b2 '4'
-	option a3 '5'
-	option b3 '16'
-
-config ignore 'ignore_cafebabe22'
-```
-
-## 已知问题
-
-- 插件文件必须用 LF 行尾，Windows 上传的 CRLF 会让 rpcd 脚本失效（打包时已自动归一为 LF）
-- 插件里的 curl 要用绝对路径 `/usr/bin/curl`，PATH 里的 `/usr/sbin/curl` 是包装脚本，在 rpcd 环境下会失败
